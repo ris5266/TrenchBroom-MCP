@@ -3,7 +3,11 @@
 #include "mdl/Brush.h"
 #include "mdl/BrushNode.h"
 #include "mdl/CatchConfig.h"
+#include "mdl/BrushFace.h"
 #include "mdl/Entity.h"
+#include "mdl/EntityDefinition.h"
+#include "mdl/EntityDefinitionManager.h"
+#include "mdl/EntityNode.h"
 #include "mdl/Grid.h"
 #include "mdl/LayerNode.h"
 #include "mdl/Map.h"
@@ -13,6 +17,9 @@
 #include "mdl/WorldNode.h"
 
 #include "vm/bbox.h"
+
+#include <algorithm>
+#include <string>
 
 #include <nlohmann/json.hpp>
 
@@ -38,6 +45,28 @@ nlohmann::json createBrushRequest(
     params["material"] = material;
   }
   return nlohmann::json{{"tool", "create_brush"}, {"params", params}};
+}
+
+/**
+ * Stocks the definition manager the way upstream's own entity tests do. The headless
+ * fixture has no game filesystem, so the real FGDs cannot be parsed here; in the editor
+ * these come from the game's own files.
+ */
+void installEntityDefinitions(mdl::Map& map)
+{
+  map.entityDefinitionManager().setDefinitions({
+    {"info_player_start",
+     Color{},
+     "player spawn point",
+     {},
+     mdl::PointEntityDefinition{vm::bbox3d{16.0}, {}, {}}},
+    {"light",
+     Color{},
+     "a light",
+     {},
+     mdl::PointEntityDefinition{vm::bbox3d{8.0}, {}, {}}},
+    {"func_door", Color{}, "a door", {}, std::nullopt},
+  });
 }
 
 size_t brushCount(const mdl::Map& map)
@@ -877,6 +906,382 @@ TEST_CASE("csg_hollow")
     CHECK(response["error"]["code"] == "invalid_parameters");
     CHECK(brushCount(map) == 1u);
   }
+}
+
+TEST_CASE("list_entity_definitions")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+  installEntityDefinitions(map);
+
+  const auto response =
+    dispatch(map, nlohmann::json{{"tool", "list_entity_definitions"}});
+
+  REQUIRE(response["ok"] == true);
+  CHECK(response["result"]["game"] == "Quake");
+  const auto& point = response["result"]["point"];
+  CHECK(std::ranges::find(point, "info_player_start") != point.end());
+  CHECK(std::ranges::find(point, "light") != point.end());
+}
+
+TEST_CASE("create_entity")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+  installEntityDefinitions(map);
+
+  const auto entityCount = [&]() {
+    auto count = size_t{0};
+    for (const auto* child : map.worldNode().defaultLayer()->children())
+    {
+      if (dynamic_cast<const mdl::EntityNode*>(child))
+      {
+        ++count;
+      }
+    }
+    return count;
+  };
+
+  SECTION("creates a point entity at an origin")
+  {
+    const auto response = dispatch(
+      map,
+      nlohmann::json{
+        {"tool", "create_entity"},
+        {"params",
+         {{"classname", "info_player_start"}, {"origin", {64, 128, 24}}}}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["kind"] == "point");
+    REQUIRE(entityCount() == 1u);
+
+    const auto* entityNode =
+      dynamic_cast<mdl::EntityNode*>(map.worldNode().defaultLayer()->children().front());
+    REQUIRE(entityNode != nullptr);
+    CHECK(entityNode->entity().classname() == "info_player_start");
+    CHECK(entityNode->entity().origin() == vm::vec3d{64, 128, 24});
+  }
+
+  SECTION("applies extra properties")
+  {
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{
+          {"tool", "create_entity"},
+          {"params",
+           {{"classname", "light"},
+            {"origin", {0, 0, 64}},
+            {"properties", {{"light", "300"}, {"targetname", "lamp1"}}}}}})["ok"]
+      == true);
+
+    const auto* entityNode =
+      dynamic_cast<mdl::EntityNode*>(map.worldNode().defaultLayer()->children().front());
+    REQUIRE(entityNode != nullptr);
+    const auto* light = entityNode->entity().property("light");
+    REQUIRE(light != nullptr);
+    CHECK(*light == "300");
+    const auto* targetname = entityNode->entity().property("targetname");
+    REQUIRE(targetname != nullptr);
+    CHECK(*targetname == "lamp1");
+  }
+
+  SECTION("turns brushes into a brush entity")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 128, 128}))["ok"] == true);
+
+    const auto response = dispatch(
+      map,
+      nlohmann::json{
+        {"tool", "create_entity"},
+        {"params", {{"classname", "func_door"}, {"target", "selection"}}}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["kind"] == "brush");
+
+    // The brush now belongs to the door rather than to worldspawn.
+    REQUIRE(entityCount() == 1u);
+    const auto* entityNode =
+      dynamic_cast<mdl::EntityNode*>(map.worldNode().defaultLayer()->children().front());
+    REQUIRE(entityNode != nullptr);
+    CHECK(entityNode->entity().classname() == "func_door");
+    CHECK(entityNode->childCount() == 1u);
+  }
+
+  SECTION("rejects a classname the game does not define")
+  {
+    const auto response = dispatch(
+      map,
+      nlohmann::json{
+        {"tool", "create_entity"},
+        {"params", {{"classname", "not_a_real_entity"}, {"origin", {0, 0, 0}}}}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+
+  SECTION("requires an origin for a point entity")
+  {
+    const auto response = dispatch(
+      map,
+      nlohmann::json{
+        {"tool", "create_entity"}, {"params", {{"classname", "info_player_start"}}}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+
+  SECTION("creating an entity is a single undo step")
+  {
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{
+          {"tool", "create_entity"},
+          {"params",
+           {{"classname", "light"},
+            {"origin", {0, 0, 64}},
+            {"properties", {{"light", "300"}}}}}})["ok"]
+      == true);
+    REQUIRE(entityCount() == 1u);
+
+    map.undoCommand();
+
+    CHECK(entityCount() == 0u);
+  }
+}
+
+TEST_CASE("selectors")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+  installEntityDefinitions(map);
+
+  const auto selectRequest = [](nlohmann::json selector) {
+    return nlohmann::json{
+      {"tool", "select_objects"}, {"params", {{"select", std::move(selector)}}}};
+  };
+
+  SECTION("by material")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}, "stone"))["ok"] == true);
+    REQUIRE(dispatch(map, createBrushRequest({128, 0, 0}, {192, 64, 64}, "wood"))["ok"] == true);
+    REQUIRE(dispatch(map, createBrushRequest({256, 0, 0}, {320, 64, 64}, "stone"))["ok"] == true);
+
+    const auto response = dispatch(map, selectRequest({{"material", "stone"}}));
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["selected"] == 2);
+    CHECK(map.selection().brushes.size() == 2u);
+  }
+
+  SECTION("by material prefix")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}, "wall_brick"))["ok"] == true);
+    REQUIRE(dispatch(map, createBrushRequest({128, 0, 0}, {192, 64, 64}, "wall_stone"))["ok"] == true);
+    REQUIRE(dispatch(map, createBrushRequest({256, 0, 0}, {320, 64, 64}, "floor"))["ok"] == true);
+
+    const auto response = dispatch(map, selectRequest({{"material", "wall_*"}}));
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["selected"] == 2);
+  }
+
+  SECTION("by classname")
+  {
+    for (const auto* classname : {"light", "light", "info_player_start"})
+    {
+      REQUIRE(
+        dispatch(
+          map,
+          nlohmann::json{
+            {"tool", "create_entity"},
+            {"params", {{"classname", classname}, {"origin", {0, 0, 0}}}}})["ok"]
+        == true);
+    }
+
+    const auto response = dispatch(map, selectRequest({{"classname", "light"}}));
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["selected"] == 2);
+  }
+
+  SECTION("by bounds, contained versus touching")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+    REQUIRE(dispatch(map, createBrushRequest({100, 0, 0}, {300, 64, 64}))["ok"] == true);
+
+    const auto box = nlohmann::json{{"min", {-16, -16, -16}}, {"max", {128, 128, 128}}};
+
+    const auto contained = dispatch(map, selectRequest({{"bounds", box}}));
+    REQUIRE(contained["ok"] == true);
+    CHECK(contained["result"]["selected"] == 1);
+
+    const auto touching =
+      dispatch(map, selectRequest({{"bounds", box}, {"mode", "touching"}}));
+    REQUIRE(touching["ok"] == true);
+    CHECK(touching["result"]["selected"] == 2);
+  }
+
+  SECTION("combining fields narrows the match")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}, "stone"))["ok"] == true);
+    REQUIRE(dispatch(map, createBrushRequest({500, 0, 0}, {564, 64, 64}, "stone"))["ok"] == true);
+
+    const auto response = dispatch(
+      map,
+      selectRequest(
+        {{"material", "stone"},
+         {"bounds", {{"min", {-16, -16, -16}}, {"max", {128, 128, 128}}}}}));
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["selected"] == 1);
+  }
+
+  SECTION("all")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+    REQUIRE(dispatch(map, createBrushRequest({128, 0, 0}, {192, 64, 64}))["ok"] == true);
+
+    const auto response = dispatch(map, selectRequest({{"all", true}}));
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["selected"] == 2);
+  }
+
+  SECTION("reports a selector that matches nothing")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}, "stone"))["ok"] == true);
+
+    const auto response = dispatch(map, selectRequest({{"material", "lava"}}));
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+
+  SECTION("rejects an empty selector rather than matching everything")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+    const auto response = dispatch(map, selectRequest(nlohmann::json::object()));
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+
+  SECTION("a transform can address geometry with a selector")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}, "stone"))["ok"] == true);
+    REQUIRE(dispatch(map, createBrushRequest({128, 0, 0}, {192, 64, 64}, "wood"))["ok"] == true);
+
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{
+          {"tool", "translate"},
+          {"params", {{"delta", {0, 0, 256}}, {"select", {{"material", "stone"}}}}}})["ok"]
+      == true);
+
+    // Only the stone brush moved.
+    for (const auto* child : map.worldNode().defaultLayer()->children())
+    {
+      const auto* brushNode = dynamic_cast<const mdl::BrushNode*>(child);
+      REQUIRE(brushNode != nullptr);
+      const auto isStone =
+        brushNode->brush().faces().front().materialName() == "stone";
+      CHECK(brushNode->logicalBounds().min.z() == (isStone ? 256.0 : 0.0));
+    }
+  }
+}
+
+TEST_CASE("flip")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  SECTION("mirrors about an explicit point")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{
+          {"tool", "flip"}, {"params", {{"axis", "x"}, {"center", {0, 0, 0}}}}})["ok"]
+      == true);
+
+    const auto* brushNode =
+      dynamic_cast<mdl::BrushNode*>(map.worldNode().defaultLayer()->children().front());
+    REQUIRE(brushNode != nullptr);
+    CHECK(brushNode->logicalBounds() == vm::bbox3d{{-64, 0, 0}, {0, 64, 64}});
+  }
+
+  SECTION("mirroring about its own centre leaves a symmetric box where it was")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+    REQUIRE(
+      dispatch(map, nlohmann::json{{"tool", "flip"}, {"params", {{"axis", "x"}}}})["ok"]
+      == true);
+
+    const auto* brushNode =
+      dynamic_cast<mdl::BrushNode*>(map.worldNode().defaultLayer()->children().front());
+    REQUIRE(brushNode != nullptr);
+    CHECK(brushNode->logicalBounds() == vm::bbox3d{{0, 0, 0}, {64, 64, 64}});
+  }
+}
+
+TEST_CASE("shear")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  SECTION("slants a box")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {128, 128, 128}))["ok"] == true);
+
+    const auto response = dispatch(
+      map,
+      nlohmann::json{
+        {"tool", "shear"}, {"params", {{"axis", "z"}, {"delta", {64, 0, 0}}}}});
+
+    REQUIRE(response["ok"] == true);
+
+    // The top slid along X, so the footprint now spans further than the original box.
+    const auto* brushNode =
+      dynamic_cast<mdl::BrushNode*>(map.worldNode().defaultLayer()->children().front());
+    REQUIRE(brushNode != nullptr);
+    CHECK(brushNode->logicalBounds().max.x() == Approx(192.0).margin(0.01));
+  }
+
+  SECTION("requires a delta")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {128, 128, 128}))["ok"] == true);
+
+    const auto response =
+      dispatch(map, nlohmann::json{{"tool", "shear"}, {"params", {{"axis", "z"}}}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+}
+
+TEST_CASE("tools that need the editor UI")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  // Headless, so there is no host: these must fail with an explanation rather than
+  // appearing to work or crashing.
+  const auto tool = GENERATE(
+    std::string{"invoke_action"}, "list_actions", "capture_viewport");
+  CAPTURE(tool);
+
+  const auto response =
+    dispatch(map, nlohmann::json{{"tool", tool}, {"params", {{"path", "Menu/Edit/Delete"}}}});
+
+  CHECK(response["ok"] == false);
+  CHECK(response["error"]["code"] == "operation_failed");
 }
 
 TEST_CASE("set_worldspawn_property")

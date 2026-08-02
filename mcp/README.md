@@ -75,6 +75,14 @@ explanation. Override the socket with `TB_MCP_SOCKET` and the schema with
 | `csg_subtract` | write | Carve brushes out of everything they touch |
 | `csg_intersect` | write | Keep only the volume brushes share |
 | `csg_hollow` | write | Turn solid brushes into shells with walls |
+| `flip` | write | Mirror objects across a plane |
+| `shear` | write | Slant objects by sliding one side |
+| `select_objects` | write | Select objects in the editor by a query |
+| `create_entity` | write | Create a point or brush entity from the game's definitions |
+| `list_entity_definitions` | read | Classnames the current game defines |
+| `invoke_action` | write | Run one of TrenchBroom's own named actions |
+| `list_actions` | read | The named actions and whether each is enabled |
+| `capture_viewport` | read | Render a view of the map as a PNG |
 | `set_worldspawn_property` | write | Sets a worldspawn key, e.g. `wad` to attach a texture WAD |
 | `batch` | write | Several operations as a single undo step |
 
@@ -119,6 +127,42 @@ bounds, so they turn and grow in place unless you pass a `center`. `scale` takes
 
 Transforms restore the editor's selection when they finish, so using one on your selection
 does not change what you have selected.
+
+### Selecting what to act on
+
+Any tool that acts on existing geometry takes either `target` or a `select` query, and
+`select` wins when both are given. Queries are resolved fresh on every call, so undo and
+redo cannot invalidate them:
+
+```json
+{"tool":"translate","params":{"delta":[0,0,64],"select":{"material":"lava*"}}}
+{"tool":"select_objects","params":{"select":{"classname":"func_*","layer":"Doors"}}}
+```
+
+| Field | Matches |
+|---|---|
+| `all` | Everything in the map |
+| `classname` | Entities with that classname, and their brushes. Trailing `*` matches a prefix |
+| `material` | Brushes with a face using that material. Trailing `*` matches a prefix |
+| `layer` | Objects in the named layer |
+| `bounds` + `mode` | Objects inside the box, or merely `touching` it |
+
+All given fields must match. An empty query is rejected rather than quietly matching the
+whole map.
+
+### Entities
+
+`create_entity` reads the game's own FGD files, so the classnames available are whatever
+the game defines — 76 point and 24 brush classes for Quake. Point entities take an
+`origin`; brush entities take over the targeted brushes instead.
+
+```json
+{"tool":"create_entity","params":{
+  "classname":"light","origin":[256,256,200],"properties":{"light":"400"}}}
+{"tool":"create_entity","params":{"classname":"func_door","target":"selection"}}
+```
+
+`list_entity_definitions` shows what the current game offers.
 
 ### CSG
 
@@ -178,6 +222,37 @@ Talk to it directly for debugging:
 ```bash
 printf '{"tool":"ping"}\n' | nc -U /tmp/trenchbroom-mcp-$USER
 ```
+
+### TrenchBroom's own actions
+
+`invoke_action` runs any of the editor's ~190 named actions by path, for whatever the
+typed tools do not cover. `list_actions` reports each one's path, label and whether it is
+currently enabled.
+
+Enabled state is evaluated live rather than read off the menu widgets, whose state is
+refreshed on a delayed timer and is stale immediately after a tool changes the selection.
+
+**Many editing actions require the map view to have keyboard focus.** `Menu/Edit/Delete`,
+for instance, is gated on `widgetOrChildHasFocus`, so it refuses while TrenchBroom is in
+the background. That is the editor's own rule, not a limitation of the bridge: view and
+grid actions work regardless, editing actions need the window focused.
+
+### Capturing a view
+
+`capture_viewport` renders a pane to a PNG, returned to the client as an image.
+
+```json
+{"tool":"capture_viewport","params":{"view":"top","fit":"map","width":800}}
+```
+
+`view` picks the pane by the axis its camera looks along, so `top`, `front` and `side`
+require a layout that actually shows those panes; `3d` needs the 3D view. `fit` of
+`"current"` leaves the camera exactly where the user left it.
+
+**Known rough edge:** automatic framing for the 2D views is approximate. TrenchBroom's own
+`focusCameraOnSelection` only centres a 2D camera and never changes its zoom, so the zoom
+is computed here, and it currently lands tighter than the content. `fit: "current"` is
+exact, and 3D framing uses the editor's own logic and is reliable.
 
 ## Getting textures to show up
 

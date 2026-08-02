@@ -650,6 +650,454 @@
     "readOnly": false
   },
   {
+    "description": "Mirror objects across a plane through their centre, or through an explicit point.",
+    "inputSchema": {
+      "properties": {
+        "axis": {
+          "description": "Axis the shape is revolved around. Defaults to \"z\" (upright).",
+          "enum": [
+            "x",
+            "y",
+            "z"
+          ],
+          "type": "string"
+        },
+        "center": {
+          "description": "Point to mirror about. Defaults to the objects' centre.",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "select": {
+          "description": "Finds objects already in the map. All given fields must match. Resolved fresh on every call, so undo and redo cannot invalidate it.",
+          "properties": {
+            "all": {
+              "description": "Every object in the map.",
+              "type": "boolean"
+            },
+            "bounds": {
+              "description": "An axis-aligned box in world units. Corners may be given in either order.",
+              "properties": {
+                "max": {
+                  "description": "The opposite corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "min": {
+                  "description": "One corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "min",
+                "max"
+              ],
+              "type": "object"
+            },
+            "classname": {
+              "description": "Entities with this classname, and the brushes belonging to them. A trailing * matches a prefix, e.g. \"func_*\".",
+              "type": "string"
+            },
+            "layer": {
+              "description": "Objects in the named layer.",
+              "type": "string"
+            },
+            "material": {
+              "description": "Brushes with at least one face using this material. A trailing * matches a prefix.",
+              "type": "string"
+            },
+            "mode": {
+              "description": "How 'bounds' matches: fully inside it (default) or merely overlapping it.",
+              "enum": [
+                "contained",
+                "touching"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "target": {
+          "description": "What to act on. \"created\" is everything earlier operations in this same call produced, \"last\" is only what the previous operation produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Use \"last\" to act on one earlier result, such as subtracting only the cutting brush from walls built in the same batch.",
+          "enum": [
+            "auto",
+            "created",
+            "last",
+            "selection"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "flip",
+    "readOnly": false
+  },
+  {
+    "description": "Slide the face of the objects' bounding box that faces along 'axis' by 'delta', slanting them.",
+    "inputSchema": {
+      "properties": {
+        "axis": {
+          "description": "Axis the shape is revolved around. Defaults to \"z\" (upright).",
+          "enum": [
+            "x",
+            "y",
+            "z"
+          ],
+          "type": "string"
+        },
+        "delta": {
+          "description": "How far to slide that side, as [x, y, z].",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "select": {
+          "description": "Finds objects already in the map. All given fields must match. Resolved fresh on every call, so undo and redo cannot invalidate it.",
+          "properties": {
+            "all": {
+              "description": "Every object in the map.",
+              "type": "boolean"
+            },
+            "bounds": {
+              "description": "An axis-aligned box in world units. Corners may be given in either order.",
+              "properties": {
+                "max": {
+                  "description": "The opposite corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "min": {
+                  "description": "One corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "min",
+                "max"
+              ],
+              "type": "object"
+            },
+            "classname": {
+              "description": "Entities with this classname, and the brushes belonging to them. A trailing * matches a prefix, e.g. \"func_*\".",
+              "type": "string"
+            },
+            "layer": {
+              "description": "Objects in the named layer.",
+              "type": "string"
+            },
+            "material": {
+              "description": "Brushes with at least one face using this material. A trailing * matches a prefix.",
+              "type": "string"
+            },
+            "mode": {
+              "description": "How 'bounds' matches: fully inside it (default) or merely overlapping it.",
+              "enum": [
+                "contained",
+                "touching"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "target": {
+          "description": "What to act on. \"created\" is everything earlier operations in this same call produced, \"last\" is only what the previous operation produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Use \"last\" to act on one earlier result, such as subtracting only the cutting brush from walls built in the same batch.",
+          "enum": [
+            "auto",
+            "created",
+            "last",
+            "selection"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "delta"
+      ],
+      "type": "object"
+    },
+    "name": "shear",
+    "readOnly": false
+  },
+  {
+    "description": "Select objects in the editor by a query. Useful on its own to show the user what you mean, and as a first step before acting on the selection.",
+    "inputSchema": {
+      "properties": {
+        "select": {
+          "description": "Finds objects already in the map. All given fields must match. Resolved fresh on every call, so undo and redo cannot invalidate it.",
+          "properties": {
+            "all": {
+              "description": "Every object in the map.",
+              "type": "boolean"
+            },
+            "bounds": {
+              "description": "An axis-aligned box in world units. Corners may be given in either order.",
+              "properties": {
+                "max": {
+                  "description": "The opposite corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "min": {
+                  "description": "One corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "min",
+                "max"
+              ],
+              "type": "object"
+            },
+            "classname": {
+              "description": "Entities with this classname, and the brushes belonging to them. A trailing * matches a prefix, e.g. \"func_*\".",
+              "type": "string"
+            },
+            "layer": {
+              "description": "Objects in the named layer.",
+              "type": "string"
+            },
+            "material": {
+              "description": "Brushes with at least one face using this material. A trailing * matches a prefix.",
+              "type": "string"
+            },
+            "mode": {
+              "description": "How 'bounds' matches: fully inside it (default) or merely overlapping it.",
+              "enum": [
+                "contained",
+                "touching"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "select"
+      ],
+      "type": "object"
+    },
+    "name": "select_objects",
+    "readOnly": false
+  },
+  {
+    "description": "Create an entity from the game's own definitions. Point entities such as info_player_start or light take an 'origin'; brush entities such as func_door take over the targeted brushes instead. Use list_entity_definitions to see what the current game offers.",
+    "inputSchema": {
+      "properties": {
+        "classname": {
+          "description": "Classname as defined by the game, e.g. \"info_player_start\".",
+          "type": "string"
+        },
+        "origin": {
+          "description": "Position, for point entities.",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "properties": {
+          "description": "Extra key/value properties to set on the new entity, e.g. {\"light\": \"300\"}.",
+          "type": "object"
+        },
+        "select": {
+          "description": "Finds objects already in the map. All given fields must match. Resolved fresh on every call, so undo and redo cannot invalidate it.",
+          "properties": {
+            "all": {
+              "description": "Every object in the map.",
+              "type": "boolean"
+            },
+            "bounds": {
+              "description": "An axis-aligned box in world units. Corners may be given in either order.",
+              "properties": {
+                "max": {
+                  "description": "The opposite corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "min": {
+                  "description": "One corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "min",
+                "max"
+              ],
+              "type": "object"
+            },
+            "classname": {
+              "description": "Entities with this classname, and the brushes belonging to them. A trailing * matches a prefix, e.g. \"func_*\".",
+              "type": "string"
+            },
+            "layer": {
+              "description": "Objects in the named layer.",
+              "type": "string"
+            },
+            "material": {
+              "description": "Brushes with at least one face using this material. A trailing * matches a prefix.",
+              "type": "string"
+            },
+            "mode": {
+              "description": "How 'bounds' matches: fully inside it (default) or merely overlapping it.",
+              "enum": [
+                "contained",
+                "touching"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "target": {
+          "description": "What to act on. \"created\" is everything earlier operations in this same call produced, \"last\" is only what the previous operation produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Use \"last\" to act on one earlier result, such as subtracting only the cutting brush from walls built in the same batch.",
+          "enum": [
+            "auto",
+            "created",
+            "last",
+            "selection"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "classname"
+      ],
+      "type": "object"
+    },
+    "name": "create_entity",
+    "readOnly": false
+  },
+  {
+    "description": "List the entity classnames the current game defines, split into point and brush entities. Read these from the game's FGD files, so they reflect the actual game.",
+    "inputSchema": {
+      "properties": {
+        "filter": {
+          "description": "Only classnames containing this substring.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "list_entity_definitions",
+    "readOnly": true
+  },
+  {
+    "description": "Run one of TrenchBroom's own menu or shortcut actions by name, for anything the other tools do not cover. Actions take no arguments and act on the current selection. Use list_actions to find one.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "description": "Action path as reported by list_actions, e.g. \"Menu/Edit/Delete\".",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "invoke_action",
+    "readOnly": false
+  },
+  {
+    "description": "List TrenchBroom's named actions and whether each is currently enabled.",
+    "inputSchema": {
+      "properties": {
+        "filter": {
+          "description": "Only actions whose path or label contains this substring.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "list_actions",
+    "readOnly": true
+  },
+  {
+    "description": "Render a view of the map as a PNG. The orthographic views read as plans and elevations and are usually easier to reason about than the 3D view.",
+    "inputSchema": {
+      "properties": {
+        "fit": {
+          "description": "What to frame: the whole map (default), the selection, or leave the camera where the user left it.",
+          "enum": [
+            "map",
+            "selection",
+            "current"
+          ],
+          "type": "string"
+        },
+        "view": {
+          "description": "\"top\" is a floor plan, \"front\" and \"side\" are elevations. Defaults to \"top\".",
+          "enum": [
+            "top",
+            "front",
+            "side",
+            "3d"
+          ],
+          "type": "string"
+        },
+        "width": {
+          "description": "Image width in pixels. Defaults to 768.",
+          "maximum": 2048,
+          "minimum": 64,
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "capture_viewport",
+    "readOnly": true
+  },
+  {
     "description": "Set a key on the worldspawn entity, such as 'wad' to attach a texture WAD, or 'message' to name the level.",
     "inputSchema": {
       "properties": {

@@ -33,9 +33,22 @@ struct ToolError
   std::string message;
 };
 
+class HostContext
+{
+public:
+  virtual ~HostContext();
+
+  virtual Result<nlohmann::json, ToolError> invokeAction(const std::string& path) = 0;
+  virtual Result<nlohmann::json, ToolError> listActions(const std::string& filter) = 0;
+  virtual Result<nlohmann::json, ToolError> captureViewport(
+    const nlohmann::json& params) = 0;
+};
+
 struct ToolContext
 {
   mdl::Map& map;
+
+  HostContext* host = nullptr;
 
   std::vector<mdl::Node*> createdNodes;
 

@@ -31,9 +31,13 @@ nlohmann::json errorResponse(const std::variant<ToolError>& error)
 }
 
 nlohmann::json runMutating(
-  mdl::Map& map, const Tool& tool, const nlohmann::json& params, const std::string& name)
+  mdl::Map& map,
+  HostContext* host,
+  const Tool& tool,
+  const nlohmann::json& params,
+  const std::string& name)
 {
-  auto context = ToolContext{map, {}};
+  auto context = ToolContext{map, host, {}, {}};
   auto transaction = mdl::Transaction{map, name};
 
   auto result = tool.handler(context, params);
@@ -57,9 +61,10 @@ nlohmann::json runMutating(
   return nlohmann::json{{"ok", true}, {"result", std::move(result).value()}};
 }
 
-nlohmann::json runReadOnly(mdl::Map& map, const Tool& tool, const nlohmann::json& params)
+nlohmann::json runReadOnly(
+  mdl::Map& map, HostContext* host, const Tool& tool, const nlohmann::json& params)
 {
-  auto context = ToolContext{map, {}};
+  auto context = ToolContext{map, host, {}, {}};
   const auto pushSelection = mdl::PushSelection{map};
 
   auto result = tool.handler(context, params);
@@ -70,7 +75,8 @@ nlohmann::json runReadOnly(mdl::Map& map, const Tool& tool, const nlohmann::json
 
 }
 
-nlohmann::json dispatch(mdl::Map& map, const nlohmann::json& request)
+nlohmann::json dispatch(
+  mdl::Map& map, const nlohmann::json& request, HostContext* host)
 {
   auto response = [&]() -> nlohmann::json {
     if (!request.is_object())
@@ -96,14 +102,14 @@ nlohmann::json dispatch(mdl::Map& map, const nlohmann::json& request)
 
     if (tool->kind == ToolKind::ReadOnly)
     {
-      return runReadOnly(map, *tool, params);
+      return runReadOnly(map, host, *tool, params);
     }
 
     const auto name = params.contains("name") && params.at("name").is_string()
                         ? fmt::format("MCP: {}", params.at("name").get<std::string>())
                         : fmt::format("MCP: {}", toolName);
 
-    return runMutating(map, *tool, params, name);
+    return runMutating(map, host, *tool, params, name);
   }();
 
   if (request.is_object() && request.contains("id"))
@@ -113,7 +119,8 @@ nlohmann::json dispatch(mdl::Map& map, const nlohmann::json& request)
   return response;
 }
 
-nlohmann::json dispatch(mdl::Map& map, const std::string& requestText)
+nlohmann::json dispatch(
+  mdl::Map& map, const std::string& requestText, HostContext* host)
 {
   auto request = nlohmann::json{};
   try
@@ -124,7 +131,7 @@ nlohmann::json dispatch(mdl::Map& map, const std::string& requestText)
   {
     return errorResponse(ErrorCode::InvalidRequest, fmt::format("invalid JSON: {}", e.what()));
   }
-  return dispatch(map, request);
+  return dispatch(map, request, host);
 }
 
 nlohmann::json toolSchema()

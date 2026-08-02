@@ -5,12 +5,18 @@
 #include "mdl/Brush.h"
 #include "mdl/BrushBuilder.h"
 #include "mdl/BrushNode.h"
+#include "mdl/BrushFace.h"
 #include "mdl/CircleShape.h"
 #include "mdl/Entity.h"
+#include "mdl/EntityDefinition.h"
+#include "mdl/EntityDefinitionManager.h"
 #include "mdl/EntityNode.h"
+#include "mdl/EntityNodeBase.h"
 #include "mdl/GameInfo.h"
 #include "mdl/Grid.h"
+#include "mdl/Group.h"
 #include "mdl/GroupNode.h"
+#include "mdl/Layer.h"
 #include "mdl/LayerNode.h"
 #include "mdl/Map.h"
 #include "mdl/MapFormat.h"
@@ -41,6 +47,9 @@
 
 namespace tb::mcp
 {
+
+HostContext::~HostContext() = default;
+
 namespace
 {
 
@@ -557,6 +566,189 @@ Result<nlohmann::json, ToolError> getScene(ToolContext& context, const nlohmann:
     {"layers", std::move(layers)}};
 }
 
+// -- selectors -------------------------------------------------------------------------
+
+nlohmann::json selectorSchema()
+{
+  return nlohmann::json{
+    {"type", "object"},
+    {"description",
+     "Finds objects already in the map. All given fields must match. Resolved fresh on "
+     "every call, so undo and redo cannot invalidate it."},
+    {"properties",
+     {{"all", {{"type", "boolean"}, {"description", "Every object in the map."}}},
+      {"classname",
+       {{"type", "string"},
+        {"description",
+         "Entities with this classname, and the brushes belonging to them. A trailing "
+         "* matches a prefix, e.g. \"func_*\"."}}},
+      {"material",
+       {{"type", "string"},
+        {"description",
+         "Brushes with at least one face using this material. A trailing * matches a "
+         "prefix."}}},
+      {"layer", {{"type", "string"}, {"description", "Objects in the named layer."}}},
+      {"bounds", boundsSchema()},
+      {"mode",
+       {{"type", "string"},
+        {"enum", nlohmann::json::array({"contained", "touching"})},
+        {"description",
+         "How 'bounds' matches: fully inside it (default) or merely overlapping it."}}}}}};
+}
+
+bool matchesPattern(std::string_view value, const std::string& pattern)
+{
+  // Only a trailing star, which covers the cases that matter (func_*, *_door is rare in
+  // Quake naming) without pulling in a regex dependency.
+  if (!pattern.empty() && pattern.back() == '*')
+  {
+    return value.substr(0, pattern.size() - 1) == std::string_view{pattern}.substr(0, pattern.size() - 1);
+  }
+  return value == pattern;
+}
+
+const mdl::LayerNode* findLayer(const mdl::Map& map, const std::string& name)
+{
+  for (const auto* layerNode : map.worldNode().allLayers())
+  {
+    if (layerNode->layer().name() == name)
+    {
+      return layerNode;
+    }
+  }
+  return nullptr;
+}
+
+Result<std::vector<mdl::Node*>, ToolError> resolveSelector(
+  mdl::Map& map, const nlohmann::json& selector)
+{
+  if (!selector.is_object())
+  {
+    return ToolError{ErrorCode::InvalidParameters, "'select' must be an object"};
+  }
+
+  const auto classname = readString(selector, "classname");
+  const auto material = readString(selector, "material");
+  const auto layerName = readString(selector, "layer");
+  const auto matchAll = selector.value("all", false);
+
+  const auto* layerNode = layerName.empty() ? nullptr : findLayer(map, layerName);
+  if (!layerName.empty() && !layerNode)
+  {
+    return ToolError{
+      ErrorCode::InvalidParameters, fmt::format("no layer named '{}'", layerName)};
+  }
+
+  if (!matchAll && classname.empty() && material.empty() && layerName.empty()
+      && !selector.contains("bounds"))
+  {
+    return ToolError{
+      ErrorCode::InvalidParameters,
+      "'select' needs at least one of all, classname, material, layer or bounds"};
+  }
+
+  auto boundsFilter = std::optional<vm::bbox3d>{};
+  if (selector.contains("bounds"))
+  {
+    auto boundsResult = readBounds(selector, "bounds");
+    if (boundsResult.is_error())
+    {
+      return std::get<ToolError>(std::move(boundsResult).error());
+    }
+    boundsFilter = boundsResult.value();
+  }
+  const auto touching = readString(selector, "mode", "contained") == "touching";
+
+  auto result = std::vector<mdl::Node*>{};
+
+  const auto inLayer = [&](const mdl::Node* node) {
+    if (!layerNode)
+    {
+      return true;
+    }
+    for (const auto* p = node; p != nullptr; p = p->parent())
+    {
+      if (p == layerNode)
+      {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const auto boundsOk = [&](const mdl::Node& node) {
+    if (!boundsFilter)
+    {
+      return true;
+    }
+    return touching ? boundsFilter->intersects(node.logicalBounds())
+                    : boundsFilter->contains(node.logicalBounds());
+  };
+
+  const auto brushMatchesMaterial = [&](const mdl::BrushNode& brushNode) {
+    if (material.empty())
+    {
+      return true;
+    }
+    for (const auto& face : brushNode.brush().faces())
+    {
+      if (matchesPattern(face.materialName(), material))
+      {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  map.worldNode().accept(kdl::overload(
+    [&](auto&& thisLambda, mdl::WorldNode& worldNode) {
+      worldNode.visitChildren(thisLambda);
+    },
+    [&](auto&& thisLambda, mdl::LayerNode& node) { node.visitChildren(thisLambda); },
+    [&](auto&& thisLambda, mdl::GroupNode& node) { node.visitChildren(thisLambda); },
+    [&](auto&& thisLambda, mdl::EntityNode& entityNode) {
+      const auto classnameOk =
+        classname.empty() || matchesPattern(entityNode.entity().classname(), classname);
+      // A brush entity is selected through its brushes, so keep descending.
+      if (classnameOk && material.empty() && inLayer(&entityNode) && boundsOk(entityNode))
+      {
+        result.push_back(&entityNode);
+      }
+      if (!classnameOk || !material.empty())
+      {
+        entityNode.visitChildren(thisLambda);
+      }
+    },
+    [&](mdl::BrushNode& brushNode) {
+      if (!classname.empty())
+      {
+        const auto* entity = brushNode.entity();
+        if (!entity || !matchesPattern(entity->entity().classname(), classname))
+        {
+          return;
+        }
+      }
+      if (brushMatchesMaterial(brushNode) && inLayer(&brushNode) && boundsOk(brushNode))
+      {
+        result.push_back(&brushNode);
+      }
+    },
+    [&](mdl::PatchNode& patchNode) {
+      if (material.empty() && classname.empty() && inLayer(&patchNode)
+          && boundsOk(patchNode))
+      {
+        result.push_back(&patchNode);
+      }
+    }));
+
+  if (result.empty())
+  {
+    return ToolError{
+      ErrorCode::InvalidParameters, "the selector matched nothing in this map"};
+  }
+  return result;
+}
+
 // -- transforms ------------------------------------------------------------------------
 
 nlohmann::json targetSchema()
@@ -575,6 +767,11 @@ nlohmann::json targetSchema()
 Result<std::vector<mdl::Node*>, ToolError> resolveTargets(
   ToolContext& context, const nlohmann::json& params)
 {
+  if (params.contains("select"))
+  {
+    return resolveSelector(context.map, params.at("select"));
+  }
+
   const auto target = readString(params, "target", "auto");
   const auto& selected = context.map.selection().nodes;
 
@@ -869,6 +1066,218 @@ Result<nlohmann::json, ToolError> csgHollow(
   return result;
 }
 
+// -- flip and shear --------------------------------------------------------------------
+
+Result<nlohmann::json, ToolError> flip(ToolContext& context, const nlohmann::json& params)
+{
+  return resolveTargets(context, params) | kdl::and_then([&](const auto& nodes) {
+           return readAxis(params) | kdl::and_then([&](const auto axis) {
+                    return readCenter(params, nodes)
+                           | kdl::and_then([&](const auto& center) {
+                               return applyToTargets(
+                                 context, nodes, "flip", [&](auto& map) {
+                                   return mdl::flipSelection(map, center, axis);
+                                 });
+                             });
+                  });
+         });
+}
+
+Result<nlohmann::json, ToolError> shear(ToolContext& context, const nlohmann::json& params)
+{
+  return resolveTargets(context, params)
+         | kdl::and_then([&](const auto& nodes) -> Result<nlohmann::json, ToolError> {
+             return readAxis(params) | kdl::and_then([&](const auto axis) {
+                      return readVec3(params, "delta") | kdl::and_then([&](const auto& d) {
+                               // The sheared side is the face of the bounding box facing
+                               // along the given axis; the delta slides it.
+                               auto side = vm::vec3d{0, 0, 0};
+                               side[axis] = 1.0;
+                               const auto box = boundsOf(nodes);
+                               return applyToTargets(
+                                 context, nodes, "shear", [&](auto& map) {
+                                   return mdl::shearSelection(map, box, side, d);
+                                 });
+                             });
+                    });
+           });
+}
+
+// -- select_objects --------------------------------------------------------------------
+
+Result<nlohmann::json, ToolError> selectObjects(
+  ToolContext& context, const nlohmann::json& params)
+{
+  auto& map = context.map;
+
+  if (!params.contains("select"))
+  {
+    return ToolError{ErrorCode::InvalidParameters, "missing 'select'"};
+  }
+
+  return resolveSelector(map, params.at("select"))
+         | kdl::and_then([&](const auto& nodes) -> Result<nlohmann::json, ToolError> {
+             mdl::deselectAll(map);
+             mdl::selectNodes(map, nodes);
+
+             context.createdNodes = nodes;
+             context.lastOpNodes = nodes;
+
+             return nlohmann::json{
+               {"selected", nodes.size()}, {"bounds", toJson(boundsOf(nodes))}};
+           });
+}
+
+// -- create_entity ---------------------------------------------------------------------
+
+Result<nlohmann::json, ToolError> createEntity(
+  ToolContext& context, const nlohmann::json& params)
+{
+  auto& map = context.map;
+
+  const auto classname = readString(params, "classname");
+  if (classname.empty())
+  {
+    return ToolError{ErrorCode::InvalidParameters, "missing 'classname'"};
+  }
+
+  const auto* definition = map.entityDefinitionManager().definition(classname);
+  if (!definition)
+  {
+    return ToolError{
+      ErrorCode::InvalidParameters,
+      fmt::format(
+        "no entity definition for '{}'; the game's FGD files define what is available",
+        classname)};
+  }
+
+  const auto isPoint = mdl::getType(*definition) == mdl::EntityDefinitionType::Point;
+
+  auto* entityNode = static_cast<mdl::EntityNode*>(nullptr);
+  if (isPoint)
+  {
+    auto originResult = readVec3(params, "origin");
+    if (originResult.is_error())
+    {
+      return std::get<ToolError>(std::move(originResult).error());
+    }
+    entityNode = mdl::createPointEntity(map, *definition, originResult.value());
+  }
+  else
+  {
+    auto targets = resolveTargets(context, params);
+    if (targets.is_error())
+    {
+      return std::get<ToolError>(std::move(targets).error());
+    }
+    mdl::deselectAll(map);
+    mdl::selectNodes(map, targets.value());
+    entityNode = mdl::createBrushEntity(map, *definition);
+  }
+
+  if (!entityNode)
+  {
+    return ToolError{
+      ErrorCode::OperationFailed, fmt::format("could not create '{}'", classname)};
+  }
+
+  if (params.contains("properties"))
+  {
+    const auto& properties = params.at("properties");
+    if (!properties.is_object())
+    {
+      return ToolError{ErrorCode::InvalidParameters, "'properties' must be an object"};
+    }
+
+    mdl::deselectAll(map);
+    mdl::selectNodes(map, {entityNode});
+    for (const auto& [key, value] : properties.items())
+    {
+      const auto text = value.is_string() ? value.get<std::string>() : value.dump();
+      if (!mdl::setEntityProperty(map, key, text))
+      {
+        return ToolError{
+          ErrorCode::OperationFailed,
+          fmt::format("could not set '{}' on the new {}", key, classname)};
+      }
+    }
+  }
+
+  context.createdNodes = {entityNode};
+  context.lastOpNodes = context.createdNodes;
+
+  return nlohmann::json{
+    {"created", 1},
+    {"classname", classname},
+    {"kind", isPoint ? "point" : "brush"},
+    {"bounds", toJson(entityNode->logicalBounds())}};
+}
+
+Result<nlohmann::json, ToolError> listEntityDefinitions(
+  ToolContext& context, const nlohmann::json& params)
+{
+  const auto filter = readString(params, "filter");
+
+  auto point = nlohmann::json::array();
+  auto brush = nlohmann::json::array();
+
+  for (const auto& definition : context.map.entityDefinitionManager().definitions())
+  {
+    if (!filter.empty() && definition.name.find(filter) == std::string::npos)
+    {
+      continue;
+    }
+    (mdl::getType(definition) == mdl::EntityDefinitionType::Point ? point : brush)
+      .push_back(definition.name);
+  }
+
+  return nlohmann::json{
+    {"point", std::move(point)},
+    {"brush", std::move(brush)},
+    {"game", context.map.gameInfo().gameConfig.name}};
+}
+
+// -- host-backed tools -----------------------------------------------------------------
+
+Result<nlohmann::json, ToolError> requireHost(const ToolContext& context)
+{
+  if (!context.host)
+  {
+    return ToolError{
+      ErrorCode::OperationFailed,
+      "this tool needs the TrenchBroom UI and is not available here"};
+  }
+  return nlohmann::json{};
+}
+
+Result<nlohmann::json, ToolError> invokeAction(
+  ToolContext& context, const nlohmann::json& params)
+{
+  return requireHost(context) | kdl::and_then([&](const auto&) {
+           const auto path = readString(params, "path");
+           return path.empty()
+                    ? Result<nlohmann::json, ToolError>{ToolError{
+                        ErrorCode::InvalidParameters, "missing 'path'"}}
+                    : context.host->invokeAction(path);
+         });
+}
+
+Result<nlohmann::json, ToolError> listActions(
+  ToolContext& context, const nlohmann::json& params)
+{
+  return requireHost(context) | kdl::and_then([&](const auto&) {
+           return context.host->listActions(readString(params, "filter"));
+         });
+}
+
+Result<nlohmann::json, ToolError> captureViewport(
+  ToolContext& context, const nlohmann::json& params)
+{
+  return requireHost(context) | kdl::and_then([&](const auto&) {
+           return context.host->captureViewport(params);
+         });
+}
+
 // -- set_worldspawn_property -----------------------------------------------------------
 
 Result<nlohmann::json, ToolError> setWorldspawnProperty(
@@ -1159,6 +1568,133 @@ const auto toolTable = std::vector<Tool>{
         {"target", targetSchema()}}},
       {"required", nlohmann::json::array()}},
     csgHollow},
+  Tool{
+    "flip",
+    "Mirror objects across a plane through their centre, or through an explicit point.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"axis", axisSchema()},
+        {"center", vec3Schema("Point to mirror about. Defaults to the objects' centre.")},
+        {"target", targetSchema()},
+        {"select", selectorSchema()}}},
+      {"required", nlohmann::json::array()}},
+    flip},
+  Tool{
+    "shear",
+    "Slide the face of the objects' bounding box that faces along 'axis' by 'delta', "
+    "slanting them.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"axis", axisSchema()},
+        {"delta", vec3Schema("How far to slide that side, as [x, y, z].")},
+        {"target", targetSchema()},
+        {"select", selectorSchema()}}},
+      {"required", nlohmann::json::array({"delta"})}},
+    shear},
+  Tool{
+    "select_objects",
+    "Select objects in the editor by a query. Useful on its own to show the user what "
+    "you mean, and as a first step before acting on the selection.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties", {{"select", selectorSchema()}}},
+      {"required", nlohmann::json::array({"select"})}},
+    selectObjects},
+  Tool{
+    "create_entity",
+    "Create an entity from the game's own definitions. Point entities such as "
+    "info_player_start or light take an 'origin'; brush entities such as func_door take "
+    "over the targeted brushes instead. Use list_entity_definitions to see what the "
+    "current game offers.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"classname",
+         {{"type", "string"},
+          {"description", "Classname as defined by the game, e.g. \"info_player_start\"."}}},
+        {"origin", vec3Schema("Position, for point entities.")},
+        {"properties",
+         {{"type", "object"},
+          {"description",
+           "Extra key/value properties to set on the new entity, e.g. {\"light\": "
+           "\"300\"}."}}},
+        {"target", targetSchema()},
+        {"select", selectorSchema()}}},
+      {"required", nlohmann::json::array({"classname"})}},
+    createEntity},
+  Tool{
+    "list_entity_definitions",
+    "List the entity classnames the current game defines, split into point and brush "
+    "entities. Read these from the game's FGD files, so they reflect the actual game.",
+    ToolKind::ReadOnly,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"filter",
+         {{"type", "string"},
+          {"description", "Only classnames containing this substring."}}}}},
+      {"required", nlohmann::json::array()}},
+    listEntityDefinitions},
+  Tool{
+    "invoke_action",
+    "Run one of TrenchBroom's own menu or shortcut actions by name, for anything the "
+    "other tools do not cover. Actions take no arguments and act on the current "
+    "selection. Use list_actions to find one.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"path",
+         {{"type", "string"},
+          {"description",
+           "Action path as reported by list_actions, e.g. \"Menu/Edit/Delete\"."}}}}},
+      {"required", nlohmann::json::array({"path"})}},
+    invokeAction},
+  Tool{
+    "list_actions",
+    "List TrenchBroom's named actions and whether each is currently enabled.",
+    ToolKind::ReadOnly,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"filter",
+         {{"type", "string"},
+          {"description", "Only actions whose path or label contains this substring."}}}}},
+      {"required", nlohmann::json::array()}},
+    listActions},
+  Tool{
+    "capture_viewport",
+    "Render a view of the map as a PNG. The orthographic views read as plans and "
+    "elevations and are usually easier to reason about than the 3D view.",
+    ToolKind::ReadOnly,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"view",
+         {{"type", "string"},
+          {"enum", nlohmann::json::array({"top", "front", "side", "3d"})},
+          {"description",
+           "\"top\" is a floor plan, \"front\" and \"side\" are elevations. Defaults to "
+           "\"top\"."}}},
+        {"fit",
+         {{"type", "string"},
+          {"enum", nlohmann::json::array({"map", "selection", "current"})},
+          {"description",
+           "What to frame: the whole map (default), the selection, or leave the camera "
+           "where the user left it."}}},
+        {"width",
+         {{"type", "integer"},
+          {"minimum", 64},
+          {"maximum", 2048},
+          {"description", "Image width in pixels. Defaults to 768."}}}}},
+      {"required", nlohmann::json::array()}},
+    captureViewport},
   Tool{
     "set_worldspawn_property",
     "Set a key on the worldspawn entity, such as 'wad' to attach a texture WAD, or "

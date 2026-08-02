@@ -15,6 +15,8 @@ from mcp.server.stdio import stdio_server
 
 CALL_TIMEOUT_SECONDS = 30.0
 
+MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+
 
 def socket_name() -> str:
     user = os.environ.get("USER") or getpass.getuser()
@@ -87,7 +89,9 @@ class TrenchBroomConnection:
                 )
 
             try:
-                reader, writer = await asyncio.open_unix_connection(str(socket_path))
+                reader, writer = await asyncio.open_unix_connection(
+                    str(socket_path), limit=MAX_RESPONSE_BYTES
+                )
             except (FileNotFoundError, ConnectionRefusedError, OSError) as error:
                 raise RuntimeError(
                     f"Could not reach TrenchBroom on {socket_path}: {error}\n"
@@ -136,6 +140,19 @@ def build_server(connection: TrenchBroomConnection, tools: list[types.Tool]) -> 
             raise RuntimeError(f"{code}: {message}")
 
         result = response.get("result", {})
+
+        if isinstance(result, dict) and result.get("format") == "png" and "data" in result:
+            summary = (
+                f"{result.get('view', 'viewport')} view, "
+                f"{result.get('width')}x{result.get('height')}"
+            )
+            return [
+                types.ImageContent(
+                    type="image", data=result["data"], mimeType="image/png"
+                ),
+                types.TextContent(type="text", text=summary),
+            ]
+
         return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
     return server

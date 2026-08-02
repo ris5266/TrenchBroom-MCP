@@ -5,6 +5,7 @@
 #include <QLocalSocket>
 
 #include "mcp/Dispatch.h"
+#include "mcp/QtHostContext.h"
 
 #include "mdl/Map.h"
 
@@ -204,7 +205,9 @@ QByteArray McpServer::handleRequest(const QByteArray& requestLine)
       "editor_busy", "an editing tool is active in TrenchBroom; deactivate it and retry");
   }
 
-  return toLine(dispatch(mapWindow->document().map(), requestLine.toStdString()));
+  auto host = QtHostContext{m_appController, *mapWindow};
+  return toLine(
+    dispatch(mapWindow->document().map(), requestLine.toStdString(), &host));
 }
 
 }
