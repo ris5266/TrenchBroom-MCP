@@ -9,6 +9,8 @@
 #include "mdl/EntityDefinitionManager.h"
 #include "mdl/EntityNode.h"
 #include "mdl/Grid.h"
+#include "mdl/GroupNode.h"
+#include "mdl/Group.h"
 #include "mdl/LayerNode.h"
 #include "mdl/Map.h"
 #include "mdl/MapFixture.h"
@@ -20,6 +22,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -1553,6 +1556,301 @@ TEST_CASE("save_map")
     CHECK(brushCount(map) == 0u);
 
     std::filesystem::remove(path);
+  }
+}
+
+TEST_CASE("set_face_attributes")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  const auto firstFace = [&]() -> const mdl::BrushFace& {
+    return dynamic_cast<mdl::BrushNode*>(map.worldNode().defaultLayer()->children().front())
+      ->brush()
+      .faces()
+      .front();
+  };
+
+  SECTION("retextures every face of the selected brush")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}, "old"))["ok"] == true);
+
+    const auto response = dispatch(
+      map,
+      nlohmann::json{
+        {"tool", "set_face_attributes"}, {"params", {{"material", "new"}}}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(firstFace().materialName() == "new");
+  }
+
+  SECTION("sets UV scale and offset as absolute values")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{
+          {"tool", "set_face_attributes"},
+          {"params", {{"x_scale", 2.0}, {"y_scale", 2.0}, {"x_offset", 16.0}}}})["ok"]
+      == true);
+
+    CHECK(firstFace().uvAttributes().scale.x() == Approx(2.0f));
+    CHECK(firstFace().uvAttributes().offset.x() == Approx(16.0f));
+  }
+
+  SECTION("can retexture by selector without touching other brushes")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}, "stone"))["ok"] == true);
+    REQUIRE(dispatch(map, createBrushRequest({128, 0, 0}, {192, 64, 64}, "wood"))["ok"] == true);
+
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{
+          {"tool", "set_face_attributes"},
+          {"params",
+           {{"material", "brick"}, {"select", {{"material", "stone"}}}}}})["ok"]
+      == true);
+
+    auto materials = std::set<std::string>{};
+    for (const auto* child : map.worldNode().defaultLayer()->children())
+    {
+      const auto* brushNode = dynamic_cast<const mdl::BrushNode*>(child);
+      REQUIRE(brushNode != nullptr);
+      materials.insert(brushNode->brush().faces().front().materialName());
+    }
+    CHECK(materials == std::set<std::string>{"brick", "wood"});
+  }
+
+  SECTION("rejects a call that changes nothing")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+    const auto response =
+      dispatch(map, nlohmann::json{{"tool", "set_face_attributes"}, {"params", {}}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+}
+
+TEST_CASE("groups")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  SECTION("grouping two brushes and addressing the group by name")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+    REQUIRE(dispatch(map, createBrushRequest({128, 0, 0}, {192, 64, 64}))["ok"] == true);
+
+    const auto grouped = dispatch(
+      map,
+      nlohmann::json{
+        {"tool", "create_group"},
+        {"params", {{"name", "pair"}, {"select", {{"all", true}}}}}});
+
+    REQUIRE(grouped["ok"] == true);
+    CHECK(grouped["result"]["children"] == 2);
+
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{
+          {"tool", "translate"},
+          {"params", {{"delta", {0, 0, 256}}, {"select", {{"group", "pair"}}}}}})["ok"]
+      == true);
+
+    const auto* groupNode = dynamic_cast<const mdl::GroupNode*>(
+      map.worldNode().defaultLayer()->children().front());
+    REQUIRE(groupNode != nullptr);
+    CHECK(groupNode->logicalBounds().min.z() == Approx(256.0).margin(0.01));
+  }
+
+  SECTION("get_scene can drill into a group")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}, "stone"))["ok"] == true);
+    REQUIRE(dispatch(map, createBrushRequest({128, 0, 0}, {192, 64, 64}, "wood"))["ok"] == true);
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{
+          {"tool", "create_group"},
+          {"params", {{"name", "atrium"}, {"select", {{"all", true}}}}}})["ok"]
+      == true);
+
+    const auto response =
+      dispatch(map, nlohmann::json{{"tool", "get_scene"}, {"params", {{"into", "atrium"}}}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["kind"] == "group");
+    CHECK(response["result"]["childCount"] == 2);
+    REQUIRE(response["result"]["children"].size() == 2u);
+    CHECK(response["result"]["children"][0]["type"] == "brush");
+    CHECK(response["result"]["children"][0].contains("materials"));
+  }
+
+  SECTION("drilling into an unknown name is an error")
+  {
+    const auto response =
+      dispatch(map, nlohmann::json{{"tool", "get_scene"}, {"params", {{"into", "nope"}}}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+}
+
+TEST_CASE("layers")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  SECTION("create, move into, drill into, rename")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+    REQUIRE(
+      dispatch(
+        map, nlohmann::json{{"tool", "create_layer"}, {"params", {{"name", "Doors"}}}})
+        ["ok"]
+      == true);
+
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{
+          {"tool", "move_to_layer"},
+          {"params", {{"layer", "Doors"}, {"select", {{"all", true}}}}}})["ok"]
+      == true);
+
+    const auto scene =
+      dispatch(map, nlohmann::json{{"tool", "get_scene"}, {"params", {{"into", "Doors"}}}});
+    REQUIRE(scene["ok"] == true);
+    CHECK(scene["result"]["kind"] == "layer");
+    CHECK(scene["result"]["childCount"] == 1);
+
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{
+          {"tool", "rename_layer"},
+          {"params", {{"layer", "Doors"}, {"name", "Portals"}}}})["ok"]
+      == true);
+
+    CHECK(
+      dispatch(map, nlohmann::json{{"tool", "get_scene"}, {"params", {{"into", "Portals"}}}})
+        ["ok"]
+      == true);
+  }
+
+  SECTION("rejects a duplicate layer name")
+  {
+    REQUIRE(
+      dispatch(map, nlohmann::json{{"tool", "create_layer"}, {"params", {{"name", "A"}}}})
+        ["ok"]
+      == true);
+
+    const auto response =
+      dispatch(map, nlohmann::json{{"tool", "create_layer"}, {"params", {{"name", "A"}}}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+}
+
+TEST_CASE("list_issues")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  SECTION("returns a well-formed report and stays inert")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+    const auto undoNameBefore = *map.undoCommandName();
+
+    const auto response = dispatch(map, nlohmann::json{{"tool", "list_issues"}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"].contains("total"));
+    CHECK(response["result"]["issues"].is_array());
+
+    CHECK(*map.undoCommandName() == undoNameBefore);
+  }
+}
+
+TEST_CASE("point_contents")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+  SECTION("a point inside a brush is solid")
+  {
+    const auto response = dispatch(
+      map, nlohmann::json{{"tool", "point_contents"}, {"params", {{"point", {32, 32, 32}}}}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["solid"] == true);
+    CHECK(response["result"]["nodes"][0]["type"] == "brush");
+  }
+
+  SECTION("a point in the open is not")
+  {
+    const auto response = dispatch(
+      map,
+      nlohmann::json{{"tool", "point_contents"}, {"params", {{"point", {512, 512, 512}}}}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["solid"] == false);
+  }
+}
+
+TEST_CASE("pick")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+  SECTION("a ray at the brush hits its near face")
+  {
+    const auto response = dispatch(
+      map,
+      nlohmann::json{
+        {"tool", "pick"},
+        {"params", {{"origin", {32, 32, 256}}, {"direction", {0, 0, -1}}}}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["hit"] == true);
+    CHECK(response["result"]["distance"] == Approx(192.0).margin(0.01));
+    CHECK(response["result"]["node"]["type"] == "brush");
+  }
+
+  SECTION("a ray into empty space misses")
+  {
+    const auto response = dispatch(
+      map,
+      nlohmann::json{
+        {"tool", "pick"},
+        {"params", {{"origin", {512, 512, 512}}, {"direction", {0, 0, 1}}}}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["hit"] == false);
+  }
+
+  SECTION("rejects a zero direction")
+  {
+    const auto response = dispatch(
+      map,
+      nlohmann::json{
+        {"tool", "pick"},
+        {"params", {{"origin", {0, 0, 0}}, {"direction", {0, 0, 0}}}}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
   }
 }
 

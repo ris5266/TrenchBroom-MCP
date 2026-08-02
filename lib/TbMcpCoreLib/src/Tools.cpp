@@ -25,7 +25,17 @@
 #include "mdl/Map_Entities.h"
 #include "mdl/Map_Geometry.h"
 #include "mdl/Map_Nodes.h"
+#include "mdl/Hit.h"
+#include "mdl/HitAdapter.h"
+#include "mdl/Issue.h"
+#include "mdl/Map_Brushes.h"
+#include "mdl/Map_Groups.h"
+#include "mdl/Map_Layers.h"
+#include "mdl/Map_Picking.h"
 #include "mdl/Map_Selection.h"
+#include "mdl/PickResult.h"
+#include "mdl/UpdateBrushFaceAttributes.h"
+#include "mdl/Validator.h"
 #include "mdl/PushSelection.h"
 #include "mdl/Node.h"
 #include "mdl/PatchNode.h"
@@ -38,6 +48,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "vm/ray.h"
 #include "vm/scalar.h"
 
 #include <algorithm>
@@ -46,6 +57,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <set>
 #include <variant>
 
 namespace tb::mcp
@@ -122,6 +134,9 @@ nlohmann::json materialSchema()
     {"description",
      "Material to apply to every face. Defaults to the editor's current material."}};
 }
+
+nlohmann::json describeNode(const mdl::Node& node);
+const mdl::LayerNode* findLayer(const mdl::Map& map, const std::string& name);
 
 // -- shared parameter reading ----------------------------------------------------------
 Result<vm::bbox3d, ToolError> readSceneBounds(
@@ -526,10 +541,65 @@ nlohmann::json summarizeChildren(const std::vector<mdl::Node*>& children)
   return result;
 }
 
-Result<nlohmann::json, ToolError> getScene(ToolContext& context, const nlohmann::json&)
+Result<nlohmann::json, ToolError> getScene(
+  ToolContext& context, const nlohmann::json& params)
 {
   auto& map = context.map;
   const auto& worldNode = map.worldNode();
+
+  if (params.contains("into"))
+  {
+    const auto into = readString(params, "into");
+    if (into.empty())
+    {
+      return ToolError{ErrorCode::InvalidParameters, "'into' must be a name"};
+    }
+
+    const mdl::Node* container = findLayer(map, into);
+    if (!container)
+    {
+      worldNode.accept(kdl::overload(
+        [&](auto&& thisLambda, const mdl::WorldNode& node) {
+          node.visitChildren(thisLambda);
+        },
+        [&](auto&& thisLambda, const mdl::LayerNode& node) {
+          node.visitChildren(thisLambda);
+        },
+        [&](auto&& thisLambda, const mdl::GroupNode& node) {
+          if (!container && node.group().name() == into)
+          {
+            container = &node;
+            return;
+          }
+          node.visitChildren(thisLambda);
+        },
+        [](const mdl::EntityNode&) {},
+        [](const mdl::BrushNode&) {},
+        [](const mdl::PatchNode&) {}));
+    }
+    if (!container)
+    {
+      return ToolError{
+        ErrorCode::InvalidParameters,
+        fmt::format("no layer or group named '{}'", into)};
+    }
+
+    auto children = nlohmann::json::array();
+    for (const auto* child : container->children())
+    {
+      if (children.size() >= 200)
+      {
+        break;
+      }
+      children.push_back(describeNode(*child));
+    }
+
+    return nlohmann::json{
+      {"into", into},
+      {"kind", dynamic_cast<const mdl::LayerNode*>(container) ? "layer" : "group"},
+      {"childCount", container->childCount()},
+      {"children", std::move(children)}};
+  }
 
   auto layers = nlohmann::json::array();
   for (const auto* layerNode : worldNode.allLayers())
@@ -590,6 +660,10 @@ nlohmann::json selectorSchema()
         {"description",
          "Brushes with at least one face using this material. A trailing * matches a "
          "prefix."}}},
+      {"group",
+       {{"type", "string"},
+        {"description",
+         "The group with this name, matched as a whole. Trailing * matches a prefix."}}},
       {"layer", {{"type", "string"}, {"description", "Objects in the named layer."}}},
       {"bounds", boundsSchema()},
       {"mode",
@@ -631,6 +705,7 @@ Result<std::vector<mdl::Node*>, ToolError> resolveSelector(
   }
 
   const auto classname = readString(selector, "classname");
+  const auto groupName = readString(selector, "group");
   const auto material = readString(selector, "material");
   const auto layerName = readString(selector, "layer");
   const auto matchAll = selector.value("all", false);
@@ -642,12 +717,13 @@ Result<std::vector<mdl::Node*>, ToolError> resolveSelector(
       ErrorCode::InvalidParameters, fmt::format("no layer named '{}'", layerName)};
   }
 
-  if (!matchAll && classname.empty() && material.empty() && layerName.empty()
-      && !selector.contains("bounds"))
+  if (!matchAll && classname.empty() && material.empty() && groupName.empty()
+      && layerName.empty() && !selector.contains("bounds"))
   {
     return ToolError{
       ErrorCode::InvalidParameters,
-      "'select' needs at least one of all, classname, material, layer or bounds"};
+      "'select' needs at least one of all, classname, material, group, layer or "
+      "bounds"};
   }
 
   auto boundsFilter = std::optional<vm::bbox3d>{};
@@ -708,7 +784,17 @@ Result<std::vector<mdl::Node*>, ToolError> resolveSelector(
       worldNode.visitChildren(thisLambda);
     },
     [&](auto&& thisLambda, mdl::LayerNode& node) { node.visitChildren(thisLambda); },
-    [&](auto&& thisLambda, mdl::GroupNode& node) { node.visitChildren(thisLambda); },
+    [&](auto&& thisLambda, mdl::GroupNode& node) {
+      if (!groupName.empty() && matchesPattern(node.group().name(), groupName))
+      {
+        if (inLayer(&node) && boundsOk(node))
+        {
+          result.push_back(&node);
+        }
+        return;
+      }
+      node.visitChildren(thisLambda);
+    },
     [&](auto&& thisLambda, mdl::EntityNode& entityNode) {
       const auto classnameOk =
         classname.empty() || matchesPattern(entityNode.entity().classname(), classname);
@@ -1240,6 +1326,360 @@ Result<nlohmann::json, ToolError> listEntityDefinitions(
     {"game", context.map.gameInfo().gameConfig.name}};
 }
 
+// -- node descriptors ------------------------------------------------------------------
+
+nlohmann::json describeNode(const mdl::Node& node)
+{
+  return node.accept(kdl::overload(
+    [](const mdl::WorldNode&) {
+      return nlohmann::json{{"type", "world"}};
+    },
+    [](const mdl::LayerNode& layerNode) {
+      return nlohmann::json{
+        {"type", "layer"}, {"name", layerNode.layer().name()}};
+    },
+    [](const mdl::GroupNode& groupNode) {
+      return nlohmann::json{
+        {"type", "group"},
+        {"name", groupNode.group().name()},
+        {"bounds", toJson(groupNode.logicalBounds())},
+        {"children", groupNode.childCount()}};
+    },
+    [](const mdl::EntityNode& entityNode) {
+      return nlohmann::json{
+        {"type", "entity"},
+        {"classname", entityNode.entity().classname()},
+        {"bounds", toJson(entityNode.logicalBounds())}};
+    },
+    [](const mdl::BrushNode& brushNode) {
+      auto materials = std::set<std::string>{};
+      for (const auto& face : brushNode.brush().faces())
+      {
+        materials.insert(face.materialName());
+      }
+      return nlohmann::json{
+        {"type", "brush"},
+        {"bounds", toJson(brushNode.logicalBounds())},
+        {"materials", materials}};
+    },
+    [](const mdl::PatchNode& patchNode) {
+      return nlohmann::json{
+        {"type", "patch"}, {"bounds", toJson(patchNode.logicalBounds())}};
+    }));
+}
+
+// -- set_face_attributes ---------------------------------------------------------------
+
+Result<nlohmann::json, ToolError> setFaceAttributes(
+  ToolContext& context, const nlohmann::json& params)
+{
+  auto update = mdl::UpdateBrushFaceAttributes{};
+
+  if (params.contains("material"))
+  {
+    update.materialName = readString(params, "material");
+  }
+
+  const auto readValue =
+    [&](const char* key) -> Result<std::optional<mdl::ValueOp>, ToolError> {
+    if (!params.contains(key))
+    {
+      return std::optional<mdl::ValueOp>{};
+    }
+    if (!params.at(key).is_number())
+    {
+      return ToolError{
+        ErrorCode::InvalidParameters, fmt::format("'{}' must be a number", key)};
+    }
+    return std::optional<mdl::ValueOp>{
+      mdl::SetValue{params.at(key).get<float>()}};
+  };
+
+  auto error = std::optional<ToolError>{};
+  const auto assign = [&](std::optional<mdl::ValueOp>& slot, const char* key) {
+    if (!error)
+    {
+      auto value = readValue(key);
+      if (value.is_error())
+      {
+        error = std::get<ToolError>(std::move(value).error());
+      }
+      else
+      {
+        slot = value.value();
+      }
+    }
+  };
+  assign(update.xOffset, "x_offset");
+  assign(update.yOffset, "y_offset");
+  assign(update.rotation, "rotation");
+  assign(update.xScale, "x_scale");
+  assign(update.yScale, "y_scale");
+  if (error)
+  {
+    return *error;
+  }
+
+  if (
+    !update.materialName && !update.xOffset && !update.yOffset && !update.rotation
+    && !update.xScale && !update.yScale)
+  {
+    return ToolError{
+      ErrorCode::InvalidParameters,
+      "give at least one of material, x_offset, y_offset, rotation, x_scale, y_scale"};
+  }
+
+  return resolveTargets(context, params) | kdl::and_then([&](const auto& nodes) {
+           return applyToTargets(context, nodes, "retexture", [&](auto& map) {
+             return mdl::setBrushFaceAttributes(map, update);
+           });
+         });
+}
+
+// -- groups and layers -----------------------------------------------------------------
+
+Result<nlohmann::json, ToolError> createGroup(
+  ToolContext& context, const nlohmann::json& params)
+{
+  const auto name = readString(params, "name");
+  if (name.empty())
+  {
+    return ToolError{ErrorCode::InvalidParameters, "missing 'name'"};
+  }
+
+  return resolveTargets(context, params)
+         | kdl::and_then([&](const auto& nodes) -> Result<nlohmann::json, ToolError> {
+             auto& map = context.map;
+
+             mdl::deselectAll(map);
+             mdl::selectNodes(map, nodes);
+
+             auto* groupNode = mdl::groupSelectedNodes(map, name);
+             if (!groupNode)
+             {
+               return ToolError{
+                 ErrorCode::OperationFailed, "could not group the objects"};
+             }
+
+             context.createdNodes = {groupNode};
+             context.lastOpNodes = context.createdNodes;
+
+             return nlohmann::json{
+               {"name", name},
+               {"children", groupNode->childCount()},
+               {"bounds", toJson(groupNode->logicalBounds())}};
+           });
+}
+
+Result<nlohmann::json, ToolError> createLayer(
+  ToolContext& context, const nlohmann::json& params)
+{
+  auto& map = context.map;
+
+  const auto name = readString(params, "name");
+  if (name.empty())
+  {
+    return ToolError{ErrorCode::InvalidParameters, "missing 'name'"};
+  }
+  if (findLayer(map, name))
+  {
+    return ToolError{
+      ErrorCode::InvalidParameters,
+      fmt::format("a layer named '{}' already exists", name)};
+  }
+
+  auto layer = mdl::Layer{name};
+  const auto customLayers = map.worldNode().customLayersUserSorted();
+  layer.setSortIndex(
+    !customLayers.empty() ? customLayers.back()->layer().sortIndex() + 1 : 0);
+
+  auto* layerNode = new mdl::LayerNode{std::move(layer)};
+  if (mdl::addNodes(map, {{&map.worldNode(), {layerNode}}}).empty())
+  {
+    delete layerNode;
+    return ToolError{ErrorCode::OperationFailed, "could not add the layer"};
+  }
+
+  return nlohmann::json{{"name", name}};
+}
+
+Result<nlohmann::json, ToolError> renameLayerTool(
+  ToolContext& context, const nlohmann::json& params)
+{
+  auto& map = context.map;
+
+  const auto from = readString(params, "layer");
+  const auto to = readString(params, "name");
+  if (from.empty() || to.empty())
+  {
+    return ToolError{ErrorCode::InvalidParameters, "give 'layer' and 'name'"};
+  }
+
+  const auto* layerNode = findLayer(map, from);
+  if (!layerNode)
+  {
+    return ToolError{
+      ErrorCode::InvalidParameters, fmt::format("no layer named '{}'", from)};
+  }
+
+  mdl::renameLayer(map, const_cast<mdl::LayerNode*>(layerNode), to);
+  return nlohmann::json{{"layer", to}};
+}
+
+Result<nlohmann::json, ToolError> moveToLayer(
+  ToolContext& context, const nlohmann::json& params)
+{
+  auto& map = context.map;
+
+  const auto layerName = readString(params, "layer");
+  if (layerName.empty())
+  {
+    return ToolError{ErrorCode::InvalidParameters, "missing 'layer'"};
+  }
+
+  const auto* layerNode = findLayer(map, layerName);
+  if (!layerNode)
+  {
+    return ToolError{
+      ErrorCode::InvalidParameters, fmt::format("no layer named '{}'", layerName)};
+  }
+
+  return resolveTargets(context, params)
+         | kdl::and_then([&](const auto& nodes) -> Result<nlohmann::json, ToolError> {
+             mdl::deselectAll(map);
+             mdl::selectNodes(map, nodes);
+
+             auto* target = const_cast<mdl::LayerNode*>(layerNode);
+             if (!mdl::canMoveSelectedNodesToLayer(map, target))
+             {
+               return ToolError{
+                 ErrorCode::OperationFailed,
+                 "these objects cannot move to that layer; grouped objects move with "
+                 "their group"};
+             }
+
+             mdl::moveSelectedNodesToLayer(map, target);
+             return nlohmann::json{{"moved", nodes.size()}, {"layer", layerName}};
+           });
+}
+
+// -- list_issues -----------------------------------------------------------------------
+
+Result<nlohmann::json, ToolError> listIssues(
+  ToolContext& context, const nlohmann::json& params)
+{
+  auto& map = context.map;
+  const auto filter = readString(params, "filter");
+  const auto validators = map.worldNode().registeredValidators();
+
+  auto issues = nlohmann::json::array();
+  auto total = size_t{0};
+
+  const auto collect = [&](mdl::Node& node) {
+    for (const auto* issue : node.issues(validators))
+    {
+      if (
+        !filter.empty()
+        && issue->description().find(filter) == std::string::npos)
+      {
+        continue;
+      }
+      ++total;
+      if (issues.size() < 100)
+      {
+        issues.push_back(nlohmann::json{
+          {"description", issue->description()}, {"node", describeNode(node)}});
+      }
+    }
+  };
+
+  map.worldNode().accept(kdl::overload(
+    [&](auto&& thisLambda, mdl::WorldNode& worldNode) {
+      collect(worldNode);
+      worldNode.visitChildren(thisLambda);
+    },
+    [&](auto&& thisLambda, mdl::LayerNode& node) {
+      collect(node);
+      node.visitChildren(thisLambda);
+    },
+    [&](auto&& thisLambda, mdl::GroupNode& node) {
+      collect(node);
+      node.visitChildren(thisLambda);
+    },
+    [&](auto&& thisLambda, mdl::EntityNode& node) {
+      collect(node);
+      node.visitChildren(thisLambda);
+    },
+    [&](mdl::BrushNode& node) { collect(node); },
+    [&](mdl::PatchNode& node) { collect(node); }));
+
+  return nlohmann::json{{"total", total}, {"issues", std::move(issues)}};
+}
+
+// -- point_contents and pick -----------------------------------------------------------
+
+Result<nlohmann::json, ToolError> pointContents(
+  ToolContext& context, const nlohmann::json& params)
+{
+  return readVec3(params, "point")
+         | kdl::and_then([&](const auto& point) -> Result<nlohmann::json, ToolError> {
+             const auto nodes = mdl::findNodesContaining(context.map, point);
+
+             auto described = nlohmann::json::array();
+             for (const auto* node : nodes)
+             {
+               if (described.size() < 20)
+               {
+                 described.push_back(describeNode(*node));
+               }
+             }
+
+             return nlohmann::json{
+               {"solid", !nodes.empty()},
+               {"count", nodes.size()},
+               {"nodes", std::move(described)}};
+           });
+}
+
+Result<nlohmann::json, ToolError> pickRay(
+  ToolContext& context, const nlohmann::json& params)
+{
+  return readVec3(params, "origin") | kdl::and_then([&](const auto& origin) {
+           return readVec3(params, "direction")
+                  | kdl::and_then(
+                    [&](const auto& direction) -> Result<nlohmann::json, ToolError> {
+                      const auto normalized = vm::normalize(direction);
+                      if (!(vm::length(direction) > 0.0))
+                      {
+                        return ToolError{
+                          ErrorCode::InvalidParameters,
+                          "'direction' must not be the zero vector"};
+                      }
+
+                      auto pickResult = mdl::PickResult{};
+                      mdl::pick(
+                        context.map, vm::ray3d{origin, normalized}, pickResult);
+
+                      const auto& hits = pickResult.all();
+                      if (hits.empty())
+                      {
+                        return nlohmann::json{{"hit", false}};
+                      }
+
+                      const auto& hit = hits.front();
+                      auto result = nlohmann::json{
+                        {"hit", true},
+                        {"distance", hit.distance()},
+                        {"point", toJson(hit.hitPoint())}};
+                      if (auto* node = mdl::hitToNode(hit))
+                      {
+                        result["node"] = describeNode(*node);
+                      }
+                      return result;
+                    });
+         });
+}
+
 // -- delete and duplicate --------------------------------------------------------------
 
 Result<nlohmann::json, ToolError> deleteObjects(
@@ -1479,10 +1919,18 @@ const auto toolTable = std::vector<Tool>{
   Tool{
     "get_scene",
     "Summarise the open map: layers, groups, brush counts, entity classname counts, "
-    "world bounds, grid size and the current selection. This is a summary, not per-brush "
-    "detail; use select_objects with a query to find specific geometry.",
+    "world bounds, grid size and the current selection. Pass 'into' with a layer or "
+    "group name to list that container's actual contents instead.",
     ToolKind::ReadOnly,
-    emptySchema(),
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"into",
+         {{"type", "string"},
+          {"description",
+           "Name of a layer or group: returns its children, described one by one, "
+           "rather than the map-wide summary."}}}}},
+      {"required", nlohmann::json::array()}},
     getScene},
   Tool{
     "create_brush",
@@ -1804,6 +2252,105 @@ const auto toolTable = std::vector<Tool>{
           {"description", "Image width in pixels. Defaults to 768."}}}}},
       {"required", nlohmann::json::array()}},
     captureViewport},
+  Tool{
+    "set_face_attributes",
+    "Change the material or UV mapping of existing brush faces: retexture, or set the "
+    "offset, rotation and scale. Values are absolute, not deltas.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"material", {{"type", "string"}, {"description", "New material name."}}},
+        {"x_offset", {{"type", "number"}}},
+        {"y_offset", {{"type", "number"}}},
+        {"rotation", {{"type", "number"}, {"description", "UV rotation in degrees."}}},
+        {"x_scale", {{"type", "number"}}},
+        {"y_scale", {{"type", "number"}}},
+        {"target", targetSchema()},
+        {"select", selectorSchema()}}},
+      {"required", nlohmann::json::array()}},
+    setFaceAttributes},
+  Tool{
+    "create_group",
+    "Group objects under a name. The named group is then a stable handle: select it "
+    "with {\"group\": name} to move or copy all of it together.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"name", {{"type", "string"}}},
+        {"target", targetSchema()},
+        {"select", selectorSchema()}}},
+      {"required", nlohmann::json::array({"name"})}},
+    createGroup},
+  Tool{
+    "create_layer",
+    "Add an empty named layer. Use move_to_layer to put objects in it.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties", {{"name", {{"type", "string"}}}}},
+      {"required", nlohmann::json::array({"name"})}},
+    createLayer},
+  Tool{
+    "rename_layer",
+    "Rename a layer.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"layer", {{"type", "string"}, {"description", "Current name."}}},
+        {"name", {{"type", "string"}, {"description", "New name."}}}}},
+      {"required", nlohmann::json::array({"layer", "name"})}},
+    renameLayerTool},
+  Tool{
+    "move_to_layer",
+    "Move objects into a named layer.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"layer", {{"type", "string"}}},
+        {"target", targetSchema()},
+        {"select", selectorSchema()}}},
+      {"required", nlohmann::json::array({"layer"})}},
+    moveToLayer},
+  Tool{
+    "list_issues",
+    "Run TrenchBroom's validators and report what is wrong with the map: missing or "
+    "misconfigured entities, bad UV scales, out-of-bounds geometry and so on. The "
+    "feedback loop for checking your own work.",
+    ToolKind::ReadOnly,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"filter",
+         {{"type", "string"},
+          {"description", "Only issues whose description contains this substring."}}}}},
+      {"required", nlohmann::json::array()}},
+    listIssues},
+  Tool{
+    "point_contents",
+    "Report what occupies a point in space: solid brushwork or nothing. Useful for "
+    "checking that a room's interior is open and its walls are not.",
+    ToolKind::ReadOnly,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties", {{"point", vec3Schema("The point to test, as [x, y, z].")}}},
+      {"required", nlohmann::json::array({"point"})}},
+    pointContents},
+  Tool{
+    "pick",
+    "Cast a ray and report the first thing it hits. The same test the editor uses for "
+    "clicking; good for line-of-sight and \"what is in this direction\" questions.",
+    ToolKind::ReadOnly,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"origin", vec3Schema("Ray start, as [x, y, z].")},
+        {"direction", vec3Schema("Ray direction; need not be normalised.")}}},
+      {"required", nlohmann::json::array({"origin", "direction"})}},
+    pickRay},
   Tool{
     "delete_objects",
     "Delete objects from the map. Prefer this over the editor's Delete action, which is "

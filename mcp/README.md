@@ -62,7 +62,7 @@ explanation. Override the socket with `TB_MCP_SOCKET` and the schema with
 | Tool | Kind | What it does |
 |---|---|---|
 | `ping` | read | Confirms the editor is reachable, reports the open map |
-| `get_scene` | read | Layers, groups, brush counts, entity classname counts, bounds, grid, selection |
+| `get_scene` | read | Map summary; pass `into` with a layer or group name for its actual contents |
 | `create_brush` | write | One axis-aligned box brush |
 | `create_cylinder` | write | Cylinder, or a hollow tube when given a `thickness` |
 | `create_cone` | write | Cone tapering along an axis |
@@ -87,6 +87,12 @@ explanation. Override the socket with `TB_MCP_SOCKET` and the schema with
 | `duplicate` | write | Copy objects in place; the copies become the call's output |
 | `save_map` | write | Write the map to disk |
 | `undo` / `redo` | write | Step the editor's history; reports what was undone |
+| `set_face_attributes` | write | Retexture faces, or set UV offset, rotation and scale |
+| `create_group` | write | Group objects under a name, usable as a stable handle |
+| `create_layer` / `rename_layer` / `move_to_layer` | write | Organise the map into layers |
+| `list_issues` | read | Run TrenchBroom's validators and report what is wrong |
+| `point_contents` | read | Whether a point in space is inside solid brushwork |
+| `pick` | read | Cast a ray, report the first thing it hits |
 | `set_worldspawn_property` | write | Sets a worldspawn key, e.g. `wad` to attach a texture WAD |
 | `batch` | write | Several operations as a single undo step |
 
@@ -148,11 +154,22 @@ redo cannot invalidate them:
 | `all` | Everything in the map |
 | `classname` | Entities with that classname, and their brushes. Trailing `*` matches a prefix |
 | `material` | Brushes with a face using that material. Trailing `*` matches a prefix |
+| `group` | The group with that name, matched as a whole. Trailing `*` matches a prefix |
 | `layer` | Objects in the named layer |
 | `bounds` + `mode` | Objects inside the box, or merely `touching` it |
 
 All given fields must match. An empty query is rejected rather than quietly matching the
 whole map.
+
+Groups are the map's only nodes with a persistent identity, so `create_group` plus the
+`group` selector is the stable way to keep hold of something across many calls: name it
+once, then move, retexture or delete "the group called room1" whenever needed.
+
+### Checking your own work
+
+`list_issues` runs the editor's validators. `point_contents` answers "is this point in
+solid or in the open" — a hollowed room should be open in the middle and solid in its
+walls. `pick` casts a ray and reports the first surface, with the exact distance.
 
 ### Entities
 
@@ -309,6 +326,5 @@ Still to come: `create_entity` against the shipped FGDs, a richer selector engin
 addressing geometry by material, classname or layer, `invoke_action` over TrenchBroom's
 ~200 named actions, and orthographic viewport captures.
 
-Face-level editing (`set_face_attributes` for retexturing and UVs), groups and layers,
-TrenchBroom's issue validators (`list_issues`), and `point_contents`/`pick` for checking
-that a map is sealed would all be straightforward next steps over existing model APIs.
+Remaining ideas: vertex-level editing, patch support, linked groups, and compiling and
+launching the map in an engine via TrenchBroom's compilation profiles.

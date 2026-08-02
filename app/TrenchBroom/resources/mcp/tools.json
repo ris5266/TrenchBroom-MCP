@@ -10,9 +10,14 @@
     "readOnly": true
   },
   {
-    "description": "Summarise the open map: layers, groups, brush counts, entity classname counts, world bounds, grid size and the current selection. This is a summary, not per-brush detail; use select_objects with a query to find specific geometry.",
+    "description": "Summarise the open map: layers, groups, brush counts, entity classname counts, world bounds, grid size and the current selection. Pass 'into' with a layer or group name to list that container's actual contents instead.",
     "inputSchema": {
-      "properties": {},
+      "properties": {
+        "into": {
+          "description": "Name of a layer or group: returns its children, described one by one, rather than the map-wide summary.",
+          "type": "string"
+        }
+      },
       "required": [],
       "type": "object"
     },
@@ -710,6 +715,10 @@
               "description": "Entities with this classname, and the brushes belonging to them. A trailing * matches a prefix, e.g. \"func_*\".",
               "type": "string"
             },
+            "group": {
+              "description": "The group with this name, matched as a whole. Trailing * matches a prefix.",
+              "type": "string"
+            },
             "layer": {
               "description": "Objects in the named layer.",
               "type": "string"
@@ -807,6 +816,10 @@
               "description": "Entities with this classname, and the brushes belonging to them. A trailing * matches a prefix, e.g. \"func_*\".",
               "type": "string"
             },
+            "group": {
+              "description": "The group with this name, matched as a whole. Trailing * matches a prefix.",
+              "type": "string"
+            },
             "layer": {
               "description": "Objects in the named layer.",
               "type": "string"
@@ -886,6 +899,10 @@
             },
             "classname": {
               "description": "Entities with this classname, and the brushes belonging to them. A trailing * matches a prefix, e.g. \"func_*\".",
+              "type": "string"
+            },
+            "group": {
+              "description": "The group with this name, matched as a whole. Trailing * matches a prefix.",
               "type": "string"
             },
             "layer": {
@@ -974,6 +991,10 @@
             },
             "classname": {
               "description": "Entities with this classname, and the brushes belonging to them. A trailing * matches a prefix, e.g. \"func_*\".",
+              "type": "string"
+            },
+            "group": {
+              "description": "The group with this name, matched as a whole. Trailing * matches a prefix.",
               "type": "string"
             },
             "layer": {
@@ -1098,6 +1119,392 @@
     "readOnly": true
   },
   {
+    "description": "Change the material or UV mapping of existing brush faces: retexture, or set the offset, rotation and scale. Values are absolute, not deltas.",
+    "inputSchema": {
+      "properties": {
+        "material": {
+          "description": "New material name.",
+          "type": "string"
+        },
+        "rotation": {
+          "description": "UV rotation in degrees.",
+          "type": "number"
+        },
+        "select": {
+          "description": "Finds objects already in the map. All given fields must match. Resolved fresh on every call, so undo and redo cannot invalidate it.",
+          "properties": {
+            "all": {
+              "description": "Every object in the map.",
+              "type": "boolean"
+            },
+            "bounds": {
+              "description": "An axis-aligned box in world units. Corners may be given in either order.",
+              "properties": {
+                "max": {
+                  "description": "The opposite corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "min": {
+                  "description": "One corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "min",
+                "max"
+              ],
+              "type": "object"
+            },
+            "classname": {
+              "description": "Entities with this classname, and the brushes belonging to them. A trailing * matches a prefix, e.g. \"func_*\".",
+              "type": "string"
+            },
+            "group": {
+              "description": "The group with this name, matched as a whole. Trailing * matches a prefix.",
+              "type": "string"
+            },
+            "layer": {
+              "description": "Objects in the named layer.",
+              "type": "string"
+            },
+            "material": {
+              "description": "Brushes with at least one face using this material. A trailing * matches a prefix.",
+              "type": "string"
+            },
+            "mode": {
+              "description": "How 'bounds' matches: fully inside it (default) or merely overlapping it.",
+              "enum": [
+                "contained",
+                "touching"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "target": {
+          "description": "What to act on. \"created\" is everything earlier operations in this same call produced, \"last\" is only what the previous operation produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Use \"last\" to act on one earlier result, such as subtracting only the cutting brush from walls built in the same batch.",
+          "enum": [
+            "auto",
+            "created",
+            "last",
+            "selection"
+          ],
+          "type": "string"
+        },
+        "x_offset": {
+          "type": "number"
+        },
+        "x_scale": {
+          "type": "number"
+        },
+        "y_offset": {
+          "type": "number"
+        },
+        "y_scale": {
+          "type": "number"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "set_face_attributes",
+    "readOnly": false
+  },
+  {
+    "description": "Group objects under a name. The named group is then a stable handle: select it with {\"group\": name} to move or copy all of it together.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "select": {
+          "description": "Finds objects already in the map. All given fields must match. Resolved fresh on every call, so undo and redo cannot invalidate it.",
+          "properties": {
+            "all": {
+              "description": "Every object in the map.",
+              "type": "boolean"
+            },
+            "bounds": {
+              "description": "An axis-aligned box in world units. Corners may be given in either order.",
+              "properties": {
+                "max": {
+                  "description": "The opposite corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "min": {
+                  "description": "One corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "min",
+                "max"
+              ],
+              "type": "object"
+            },
+            "classname": {
+              "description": "Entities with this classname, and the brushes belonging to them. A trailing * matches a prefix, e.g. \"func_*\".",
+              "type": "string"
+            },
+            "group": {
+              "description": "The group with this name, matched as a whole. Trailing * matches a prefix.",
+              "type": "string"
+            },
+            "layer": {
+              "description": "Objects in the named layer.",
+              "type": "string"
+            },
+            "material": {
+              "description": "Brushes with at least one face using this material. A trailing * matches a prefix.",
+              "type": "string"
+            },
+            "mode": {
+              "description": "How 'bounds' matches: fully inside it (default) or merely overlapping it.",
+              "enum": [
+                "contained",
+                "touching"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "target": {
+          "description": "What to act on. \"created\" is everything earlier operations in this same call produced, \"last\" is only what the previous operation produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Use \"last\" to act on one earlier result, such as subtracting only the cutting brush from walls built in the same batch.",
+          "enum": [
+            "auto",
+            "created",
+            "last",
+            "selection"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "create_group",
+    "readOnly": false
+  },
+  {
+    "description": "Add an empty named layer. Use move_to_layer to put objects in it.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "create_layer",
+    "readOnly": false
+  },
+  {
+    "description": "Rename a layer.",
+    "inputSchema": {
+      "properties": {
+        "layer": {
+          "description": "Current name.",
+          "type": "string"
+        },
+        "name": {
+          "description": "New name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "layer",
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "rename_layer",
+    "readOnly": false
+  },
+  {
+    "description": "Move objects into a named layer.",
+    "inputSchema": {
+      "properties": {
+        "layer": {
+          "type": "string"
+        },
+        "select": {
+          "description": "Finds objects already in the map. All given fields must match. Resolved fresh on every call, so undo and redo cannot invalidate it.",
+          "properties": {
+            "all": {
+              "description": "Every object in the map.",
+              "type": "boolean"
+            },
+            "bounds": {
+              "description": "An axis-aligned box in world units. Corners may be given in either order.",
+              "properties": {
+                "max": {
+                  "description": "The opposite corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "min": {
+                  "description": "One corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "min",
+                "max"
+              ],
+              "type": "object"
+            },
+            "classname": {
+              "description": "Entities with this classname, and the brushes belonging to them. A trailing * matches a prefix, e.g. \"func_*\".",
+              "type": "string"
+            },
+            "group": {
+              "description": "The group with this name, matched as a whole. Trailing * matches a prefix.",
+              "type": "string"
+            },
+            "layer": {
+              "description": "Objects in the named layer.",
+              "type": "string"
+            },
+            "material": {
+              "description": "Brushes with at least one face using this material. A trailing * matches a prefix.",
+              "type": "string"
+            },
+            "mode": {
+              "description": "How 'bounds' matches: fully inside it (default) or merely overlapping it.",
+              "enum": [
+                "contained",
+                "touching"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "target": {
+          "description": "What to act on. \"created\" is everything earlier operations in this same call produced, \"last\" is only what the previous operation produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Use \"last\" to act on one earlier result, such as subtracting only the cutting brush from walls built in the same batch.",
+          "enum": [
+            "auto",
+            "created",
+            "last",
+            "selection"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "layer"
+      ],
+      "type": "object"
+    },
+    "name": "move_to_layer",
+    "readOnly": false
+  },
+  {
+    "description": "Run TrenchBroom's validators and report what is wrong with the map: missing or misconfigured entities, bad UV scales, out-of-bounds geometry and so on. The feedback loop for checking your own work.",
+    "inputSchema": {
+      "properties": {
+        "filter": {
+          "description": "Only issues whose description contains this substring.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "list_issues",
+    "readOnly": true
+  },
+  {
+    "description": "Report what occupies a point in space: solid brushwork or nothing. Useful for checking that a room's interior is open and its walls are not.",
+    "inputSchema": {
+      "properties": {
+        "point": {
+          "description": "The point to test, as [x, y, z].",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        }
+      },
+      "required": [
+        "point"
+      ],
+      "type": "object"
+    },
+    "name": "point_contents",
+    "readOnly": true
+  },
+  {
+    "description": "Cast a ray and report the first thing it hits. The same test the editor uses for clicking; good for line-of-sight and \"what is in this direction\" questions.",
+    "inputSchema": {
+      "properties": {
+        "direction": {
+          "description": "Ray direction; need not be normalised.",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "origin": {
+          "description": "Ray start, as [x, y, z].",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        }
+      },
+      "required": [
+        "origin",
+        "direction"
+      ],
+      "type": "object"
+    },
+    "name": "pick",
+    "readOnly": true
+  },
+  {
     "description": "Delete objects from the map. Prefer this over the editor's Delete action, which is only available while the map view has keyboard focus.",
     "inputSchema": {
       "properties": {
@@ -1138,6 +1545,10 @@
             },
             "classname": {
               "description": "Entities with this classname, and the brushes belonging to them. A trailing * matches a prefix, e.g. \"func_*\".",
+              "type": "string"
+            },
+            "group": {
+              "description": "The group with this name, matched as a whole. Trailing * matches a prefix.",
               "type": "string"
             },
             "layer": {
@@ -1217,6 +1628,10 @@
             },
             "classname": {
               "description": "Entities with this classname, and the brushes belonging to them. A trailing * matches a prefix, e.g. \"func_*\".",
+              "type": "string"
+            },
+            "group": {
+              "description": "The group with this name, matched as a whole. Trailing * matches a prefix.",
               "type": "string"
             },
             "layer": {
