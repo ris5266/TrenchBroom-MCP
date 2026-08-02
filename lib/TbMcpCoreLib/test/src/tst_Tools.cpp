@@ -14,11 +14,14 @@
 
 #include <nlohmann/json.hpp>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
 namespace tb::mcp
 {
+using Catch::Approx;
+
 namespace
 {
 
@@ -380,6 +383,260 @@ TEST_CASE("shapes reject bounds outside the world")
   CHECK(response["ok"] == false);
   CHECK(response["error"]["code"] == "invalid_parameters");
   CHECK(brushCount(map) == 0u);
+}
+
+TEST_CASE("translate")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  const auto boxBounds = [&]() {
+    return dynamic_cast<mdl::BrushNode*>(map.worldNode().defaultLayer()->children().front())
+      ->logicalBounds();
+  };
+
+  SECTION("moves the editor selection")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+    const auto response = dispatch(
+      map, nlohmann::json{{"tool", "translate"}, {"params", {{"delta", {0, 0, 128}}}}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["transformed"] == 1);
+    CHECK(boxBounds() == vm::bbox3d{{0, 0, 128}, {64, 64, 192}});
+  }
+
+  SECTION("moves what the same batch just created")
+  {
+    const auto response = dispatch(
+      map,
+      nlohmann::json{
+        {"tool", "batch"},
+        {"params",
+         {{"ops",
+           nlohmann::json::array(
+             {createBrushRequest({0, 0, 0}, {64, 64, 64}),
+              nlohmann::json{
+                {"tool", "translate"}, {"params", {{"delta", {256, 0, 0}}}}}})}}}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(boxBounds() == vm::bbox3d{{256, 0, 0}, {320, 64, 64}});
+  }
+
+  SECTION("build then move is a single undo step")
+  {
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{
+          {"tool", "batch"},
+          {"params",
+           {{"ops",
+             nlohmann::json::array(
+               {createBrushRequest({0, 0, 0}, {64, 64, 64}),
+                nlohmann::json{
+                  {"tool", "translate"},
+                  {"params", {{"delta", {256, 0, 0}}}}}})}}}})["ok"]
+      == true);
+    REQUIRE(brushCount(map) == 1u);
+
+    map.undoCommand();
+
+    CHECK(brushCount(map) == 0u);
+  }
+
+  SECTION("reports when there is nothing to move")
+  {
+    const auto response = dispatch(
+      map, nlohmann::json{{"tool", "translate"}, {"params", {{"delta", {0, 0, 128}}}}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+
+  SECTION("target 'created' does not fall back to the selection")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+    const auto response = dispatch(
+      map,
+      nlohmann::json{
+        {"tool", "translate"},
+        {"params", {{"delta", {0, 0, 128}}, {"target", "created"}}}});
+
+    CHECK(response["ok"] == false);
+    CHECK(boxBounds() == vm::bbox3d{{0, 0, 0}, {64, 64, 64}});
+  }
+
+  SECTION("requires a delta")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+    const auto response =
+      dispatch(map, nlohmann::json{{"tool", "translate"}, {"params", {{"target", "auto"}}}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+}
+
+TEST_CASE("rotate")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  const auto boxBounds = [&]() {
+    return dynamic_cast<mdl::BrushNode*>(map.worldNode().defaultLayer()->children().front())
+      ->logicalBounds();
+  };
+
+  SECTION("a quarter turn about z swaps the footprint")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {128, 64, 64}))["ok"] == true);
+
+    const auto response = dispatch(
+      map, nlohmann::json{{"tool", "rotate"}, {"params", {{"angle", 90}}}});
+
+    REQUIRE(response["ok"] == true);
+    // Rotating about the centre of a 128x64 footprint gives a 64x128 one.
+    const auto bounds = boxBounds();
+    CHECK(bounds.size().x() == Approx(64.0).margin(0.01));
+    CHECK(bounds.size().y() == Approx(128.0).margin(0.01));
+  }
+
+  SECTION("a full turn is a no-op")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {128, 64, 64}))["ok"] == true);
+
+    REQUIRE(
+      dispatch(map, nlohmann::json{{"tool", "rotate"}, {"params", {{"angle", 360}}}})["ok"]
+      == true);
+
+    const auto bounds = boxBounds();
+    CHECK(bounds.min.x() == Approx(0.0).margin(0.01));
+    CHECK(bounds.max.x() == Approx(128.0).margin(0.01));
+  }
+
+  SECTION("rotates about an explicit centre")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{
+          {"tool", "rotate"},
+          {"params", {{"angle", 180}, {"axis", "z"}, {"center", {0, 0, 0}}}}})["ok"]
+      == true);
+
+    const auto bounds = boxBounds();
+    CHECK(bounds.min.x() == Approx(-64.0).margin(0.01));
+    CHECK(bounds.max.x() == Approx(0.0).margin(0.01));
+  }
+
+  SECTION("requires an angle")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+    const auto response =
+      dispatch(map, nlohmann::json{{"tool", "rotate"}, {"params", {{"axis", "z"}}}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+}
+
+TEST_CASE("scale")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  const auto boxBounds = [&]() {
+    return dynamic_cast<mdl::BrushNode*>(map.worldNode().defaultLayer()->children().front())
+      ->logicalBounds();
+  };
+
+  SECTION("scales uniformly from a single number")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({-32, -32, -32}, {32, 32, 32}))["ok"] == true);
+
+    REQUIRE(
+      dispatch(map, nlohmann::json{{"tool", "scale"}, {"params", {{"factors", 2}}}})["ok"]
+      == true);
+
+    CHECK(boxBounds() == vm::bbox3d{{-64, -64, -64}, {64, 64, 64}});
+  }
+
+  SECTION("scales per axis")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({-32, -32, -32}, {32, 32, 32}))["ok"] == true);
+
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{{"tool", "scale"}, {"params", {{"factors", {1, 1, 4}}}}})["ok"]
+      == true);
+
+    CHECK(boxBounds() == vm::bbox3d{{-32, -32, -128}, {32, 32, 128}});
+  }
+
+  SECTION("fits objects into a target box")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{
+          {"tool", "scale"},
+          {"params",
+           {{"bounds", {{"min", {0, 0, 0}}, {"max", {256, 128, 32}}}}}}})["ok"]
+      == true);
+
+    CHECK(boxBounds() == vm::bbox3d{{0, 0, 0}, {256, 128, 32}});
+  }
+
+  SECTION("rejects a zero factor that would collapse the geometry")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+    const auto response = dispatch(
+      map, nlohmann::json{{"tool", "scale"}, {"params", {{"factors", {1, 1, 0}}}}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+    CHECK(boxBounds() == vm::bbox3d{{0, 0, 0}, {64, 64, 64}});
+  }
+
+  SECTION("requires factors or bounds")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+    const auto response =
+      dispatch(map, nlohmann::json{{"tool", "scale"}, {"params", nlohmann::json::object()}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+}
+
+TEST_CASE("transforms leave the user's selection alone")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+  REQUIRE(dispatch(map, createBrushRequest({256, 0, 0}, {320, 64, 64}))["ok"] == true);
+  const auto selectionBefore = map.selection().nodes;
+  REQUIRE(selectionBefore.size() == 1u);
+
+  REQUIRE(
+    dispatch(map, nlohmann::json{{"tool", "translate"}, {"params", {{"delta", {0, 0, 64}}}}})
+      ["ok"]
+    == true);
+
+  CHECK(map.selection().nodes == selectionBefore);
 }
 
 TEST_CASE("set_worldspawn_property")

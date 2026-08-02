@@ -68,6 +68,9 @@ explanation. Override the socket with `TB_MCP_SOCKET` and the schema with
 | `create_cone` | write | Cone tapering along an axis |
 | `create_sphere` | write | Sphere, `uv` (stacked rings) or `ico` (subdivided triangles) |
 | `create_arch` | write | Semicircular arch as a band of wedge brushes |
+| `translate` | write | Move objects by a delta |
+| `rotate` | write | Rotate about an axis, in degrees |
+| `scale` | write | Scale by factors, or fit into a target box |
 | `set_worldspawn_property` | write | Sets a worldspawn key, e.g. `wad` to attach a texture WAD |
 | `batch` | write | Several operations as a single undo step |
 
@@ -83,6 +86,34 @@ ones share two more:
 `create_cylinder` with a `thickness`, and `create_arch`, each produce **several** brushes
 from one call. They still land as a single undo step, and `result.created` reports how
 many.
+
+### What a transform acts on
+
+There is no persistent handle for a brush, undo and redo replace nodes, so transforms
+resolve their target fresh on every call, via `target`:
+
+| `target` | Acts on |
+|---|---|
+| `"auto"` (default) | What this call created, if anything; otherwise the editor's selection |
+| `"created"` | Only what earlier operations in this same call produced |
+| `"selection"` | Only what is selected in the editor |
+
+That default is what makes building inside a `batch` read naturally — make a shape, then
+move it, in one undo step:
+
+```json
+{"tool":"batch","params":{"name":"leaning pillar","ops":[
+  {"tool":"create_brush","params":{"bounds":{"min":[0,0,0],"max":[96,96,384]}}},
+  {"tool":"rotate","params":{"angle":20,"axis":"y"}}
+]}}
+```
+
+Angles are **degrees**. `rotate` and `scale` default to the centre of the objects' own
+bounds, so they turn and grow in place unless you pass a `center`. `scale` takes either
+`factors` (a number for uniform scaling, or `[x, y, z]`) or a `bounds` box to fit into.
+
+Transforms restore the editor's selection when they finish, so using one on your selection
+does not change what you have selected.
 
 ### Guarantees
 
@@ -162,9 +193,8 @@ cmake --build build --target TbMcpCoreLibTest
 
 ## Not yet implemented
 
-Still to come: `create_entity` against the shipped FGDs, transforms (translate, rotate,
-scale), CSG, the selector engine for addressing geometry that already exists, `invoke_action`
-over TrenchBroom's ~200 named actions, and orthographic viewport captures.
+Still to come: `create_entity` against the shipped FGDs, CSG (merge, subtract, intersect,
+hollow), a richer selector engine for addressing geometry by material, classname or layer,
+`invoke_action` over TrenchBroom's ~200 named actions, and orthographic viewport captures.
 
-Until transforms land, everything is axis-aligned, so sloped surfaces have to be built as
-stepped geometry.
+`flip` and `shear` exist in the model layer and would be short additions.

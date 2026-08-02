@@ -410,6 +410,154 @@
     "readOnly": false
   },
   {
+    "description": "Move objects by a delta. Acts on what this call has created so far, or on the editor's selection.",
+    "inputSchema": {
+      "properties": {
+        "delta": {
+          "description": "Offset in world units, as [x, y, z].",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "target": {
+          "description": "What to act on. \"created\" is whatever earlier operations in this same call produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Inside a batch, \"auto\" lets you build a shape and then transform it.",
+          "enum": [
+            "auto",
+            "created",
+            "selection"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "delta"
+      ],
+      "type": "object"
+    },
+    "name": "translate",
+    "readOnly": false
+  },
+  {
+    "description": "Rotate objects around an axis, in degrees, counter-clockwise looking down that axis. Defaults to spinning about the centre of what is being rotated.",
+    "inputSchema": {
+      "properties": {
+        "angle": {
+          "description": "Angle in degrees.",
+          "type": "number"
+        },
+        "axis": {
+          "description": "Axis the shape is revolved around. Defaults to \"z\" (upright).",
+          "enum": [
+            "x",
+            "y",
+            "z"
+          ],
+          "type": "string"
+        },
+        "center": {
+          "description": "Point to rotate around. Defaults to the centre of the objects' bounds.",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "target": {
+          "description": "What to act on. \"created\" is whatever earlier operations in this same call produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Inside a batch, \"auto\" lets you build a shape and then transform it.",
+          "enum": [
+            "auto",
+            "created",
+            "selection"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "angle"
+      ],
+      "type": "object"
+    },
+    "name": "rotate",
+    "readOnly": false
+  },
+  {
+    "description": "Scale objects, either by factors about a centre, or by fitting them into a target box. Give one of 'factors' or 'bounds'.",
+    "inputSchema": {
+      "properties": {
+        "bounds": {
+          "description": "An axis-aligned box in world units. Corners may be given in either order.",
+          "properties": {
+            "max": {
+              "description": "The opposite corner, as [x, y, z].",
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            },
+            "min": {
+              "description": "One corner, as [x, y, z].",
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            }
+          },
+          "required": [
+            "min",
+            "max"
+          ],
+          "type": "object"
+        },
+        "center": {
+          "description": "Fixed point for 'factors'. Defaults to the centre of the objects' bounds.",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "factors": {
+          "description": "Scale factors as [x, y, z], or one number to scale uniformly.",
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            }
+          ]
+        },
+        "target": {
+          "description": "What to act on. \"created\" is whatever earlier operations in this same call produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Inside a batch, \"auto\" lets you build a shape and then transform it.",
+          "enum": [
+            "auto",
+            "created",
+            "selection"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "scale",
+    "readOnly": false
+  },
+  {
     "description": "Set a key on the worldspawn entity, such as 'wad' to attach a texture WAD, or 'message' to name the level.",
     "inputSchema": {
       "properties": {
