@@ -71,6 +71,10 @@ explanation. Override the socket with `TB_MCP_SOCKET` and the schema with
 | `translate` | write | Move objects by a delta |
 | `rotate` | write | Rotate about an axis, in degrees |
 | `scale` | write | Scale by factors, or fit into a target box |
+| `csg_merge` | write | Merge brushes into their convex hull |
+| `csg_subtract` | write | Carve brushes out of everything they touch |
+| `csg_intersect` | write | Keep only the volume brushes share |
+| `csg_hollow` | write | Turn solid brushes into shells with walls |
 | `set_worldspawn_property` | write | Sets a worldspawn key, e.g. `wad` to attach a texture WAD |
 | `batch` | write | Several operations as a single undo step |
 
@@ -95,7 +99,8 @@ resolve their target fresh on every call, via `target`:
 | `target` | Acts on |
 |---|---|
 | `"auto"` (default) | What this call created, if anything; otherwise the editor's selection |
-| `"created"` | Only what earlier operations in this same call produced |
+| `"created"` | Everything earlier operations in this same call produced |
+| `"last"` | Only what the previous operation produced |
 | `"selection"` | Only what is selected in the editor |
 
 That default is what makes building inside a `batch` read naturally — make a shape, then
@@ -114,6 +119,33 @@ bounds, so they turn and grow in place unless you pass a `center`. `scale` takes
 
 Transforms restore the editor's selection when they finish, so using one on your selection
 does not change what you have selected.
+
+### CSG
+
+CSG *consumes* what it acts on: the source brushes are deleted and the results take their
+place. So unlike a transform, these do not put the previous selection back — the result is
+left selected, which is what the editor does when you run the same command by hand.
+
+`target: "last"` exists for exactly this. Carving a doorway means subtracting **only** the
+cutting brush from the walls; with `"created"` the walls would be subtrahends too and
+there would be nothing left to cut into. A sealed room with a door, as one undo step:
+
+```json
+{"tool":"batch","params":{"name":"room with doorway","ops":[
+  {"tool":"create_brush","params":{"bounds":{"min":[0,0,0],"max":[512,512,256]}}},
+  {"tool":"csg_hollow","params":{"thickness":16}},
+  {"tool":"create_brush","params":{"bounds":{"min":[-32,200,0],"max":[32,312,160]}}},
+  {"tool":"csg_subtract","params":{"target":"last"}}
+]}}
+```
+
+`csg_hollow`'s `thickness` must be a power of two between 0.125 and 256, because
+TrenchBroom applies it through the editor's grid. The tool pins the grid for the duration
+and restores it, so the same call gives the same geometry regardless of the user's grid
+setting; omit `thickness` to use whatever the grid currently is.
+
+`csg_intersect` needs at least two brushes. All four fail cleanly, rolling the whole call
+back, when the brushes do not overlap in a way the operation can use.
 
 ### Guarantees
 
@@ -193,8 +225,8 @@ cmake --build build --target TbMcpCoreLibTest
 
 ## Not yet implemented
 
-Still to come: `create_entity` against the shipped FGDs, CSG (merge, subtract, intersect,
-hollow), a richer selector engine for addressing geometry by material, classname or layer,
-`invoke_action` over TrenchBroom's ~200 named actions, and orthographic viewport captures.
+Still to come: `create_entity` against the shipped FGDs, a richer selector engine for
+addressing geometry by material, classname or layer, `invoke_action` over TrenchBroom's
+~200 named actions, and orthographic viewport captures.
 
 `flip` and `shear` exist in the model layer and would be short additions.

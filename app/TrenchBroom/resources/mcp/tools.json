@@ -423,10 +423,11 @@
           "type": "array"
         },
         "target": {
-          "description": "What to act on. \"created\" is whatever earlier operations in this same call produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Inside a batch, \"auto\" lets you build a shape and then transform it.",
+          "description": "What to act on. \"created\" is everything earlier operations in this same call produced, \"last\" is only what the previous operation produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Use \"last\" to act on one earlier result, such as subtracting only the cutting brush from walls built in the same batch.",
           "enum": [
             "auto",
             "created",
+            "last",
             "selection"
           ],
           "type": "string"
@@ -467,10 +468,11 @@
           "type": "array"
         },
         "target": {
-          "description": "What to act on. \"created\" is whatever earlier operations in this same call produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Inside a batch, \"auto\" lets you build a shape and then transform it.",
+          "description": "What to act on. \"created\" is everything earlier operations in this same call produced, \"last\" is only what the previous operation produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Use \"last\" to act on one earlier result, such as subtracting only the cutting brush from walls built in the same batch.",
           "enum": [
             "auto",
             "created",
+            "last",
             "selection"
           ],
           "type": "string"
@@ -542,10 +544,11 @@
           ]
         },
         "target": {
-          "description": "What to act on. \"created\" is whatever earlier operations in this same call produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Inside a batch, \"auto\" lets you build a shape and then transform it.",
+          "description": "What to act on. \"created\" is everything earlier operations in this same call produced, \"last\" is only what the previous operation produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Use \"last\" to act on one earlier result, such as subtracting only the cutting brush from walls built in the same batch.",
           "enum": [
             "auto",
             "created",
+            "last",
             "selection"
           ],
           "type": "string"
@@ -555,6 +558,95 @@
       "type": "object"
     },
     "name": "scale",
+    "readOnly": false
+  },
+  {
+    "description": "Merge brushes into their convex hull. The result is one brush, so this only makes sense for shapes that are actually convex together.",
+    "inputSchema": {
+      "properties": {
+        "target": {
+          "description": "What to act on. \"created\" is everything earlier operations in this same call produced, \"last\" is only what the previous operation produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Use \"last\" to act on one earlier result, such as subtracting only the cutting brush from walls built in the same batch.",
+          "enum": [
+            "auto",
+            "created",
+            "last",
+            "selection"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "csg_merge",
+    "readOnly": false
+  },
+  {
+    "description": "Carve the target brushes out of every brush they touch, then delete them. This is how you cut a doorway or window: build a box where the hole should be, then subtract it. The tool brush does not survive the operation.",
+    "inputSchema": {
+      "properties": {
+        "target": {
+          "description": "What to act on. \"created\" is everything earlier operations in this same call produced, \"last\" is only what the previous operation produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Use \"last\" to act on one earlier result, such as subtracting only the cutting brush from walls built in the same batch.",
+          "enum": [
+            "auto",
+            "created",
+            "last",
+            "selection"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "csg_subtract",
+    "readOnly": false
+  },
+  {
+    "description": "Replace the target brushes with the volume they all share. Needs at least two, and produces nothing if they do not overlap.",
+    "inputSchema": {
+      "properties": {
+        "target": {
+          "description": "What to act on. \"created\" is everything earlier operations in this same call produced, \"last\" is only what the previous operation produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Use \"last\" to act on one earlier result, such as subtracting only the cutting brush from walls built in the same batch.",
+          "enum": [
+            "auto",
+            "created",
+            "last",
+            "selection"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "csg_intersect",
+    "readOnly": false
+  },
+  {
+    "description": "Turn solid brushes into hollow shells with walls of the given thickness, replacing each brush with the six that enclose it. A quick way to make a sealed room from a single box.",
+    "inputSchema": {
+      "properties": {
+        "target": {
+          "description": "What to act on. \"created\" is everything earlier operations in this same call produced, \"last\" is only what the previous operation produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Use \"last\" to act on one earlier result, such as subtracting only the cutting brush from walls built in the same batch.",
+          "enum": [
+            "auto",
+            "created",
+            "last",
+            "selection"
+          ],
+          "type": "string"
+        },
+        "thickness": {
+          "description": "Wall thickness in world units. Must be a power of two between 0.125 and 256, because it is applied through the editor's grid. Defaults to the current grid size.",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "csg_hollow",
     "readOnly": false
   },
   {

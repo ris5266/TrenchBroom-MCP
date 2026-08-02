@@ -38,6 +38,8 @@ struct ToolContext
   mdl::Map& map;
 
   std::vector<mdl::Node*> createdNodes;
+
+  std::vector<mdl::Node*> lastOpNodes;
 };
 
 using ToolHandler =

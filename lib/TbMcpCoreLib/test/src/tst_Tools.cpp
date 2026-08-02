@@ -4,6 +4,8 @@
 #include "mdl/BrushNode.h"
 #include "mdl/CatchConfig.h"
 #include "mdl/Entity.h"
+#include "mdl/Grid.h"
+#include "mdl/LayerNode.h"
 #include "mdl/Map.h"
 #include "mdl/MapFixture.h"
 #include "mdl/Map_Selection.h"
@@ -637,6 +639,244 @@ TEST_CASE("transforms leave the user's selection alone")
     == true);
 
   CHECK(map.selection().nodes == selectionBefore);
+}
+
+TEST_CASE("csg_subtract")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  SECTION("carves a notch out of a wall and consumes the tool brush")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {256, 32, 128}))["ok"] == true);
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 32, 64}))["ok"] == true);
+    REQUIRE(brushCount(map) == 2u);
+
+    const auto response =
+      dispatch(map, nlohmann::json{{"tool", "csg_subtract"}, {"params", {}}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["created"] > 0);
+    CHECK(brushCount(map) == size_t(response["result"]["created"]));
+
+    const auto corner = vm::vec3d{32, 16, 32};
+    for (const auto* child : map.worldNode().defaultLayer()->children())
+    {
+      const auto* brushNode = dynamic_cast<const mdl::BrushNode*>(child);
+      REQUIRE(brushNode != nullptr);
+      CHECK_FALSE(brushNode->brush().containsPoint(corner));
+    }
+  }
+
+  SECTION("the whole carve is a single undo step")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {256, 32, 128}))["ok"] == true);
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 32, 64}))["ok"] == true);
+
+    REQUIRE(dispatch(map, nlohmann::json{{"tool", "csg_subtract"}, {"params", {}}})["ok"]
+            == true);
+
+    map.undoCommand();
+
+    CHECK(brushCount(map) == 2u);
+  }
+
+  SECTION("build a wall and carve it in one batch, then transform the result")
+  {
+    const auto response = dispatch(
+      map,
+      nlohmann::json{
+        {"tool", "batch"},
+        {"params",
+         {{"name", "carve and move"},
+          {"ops",
+           nlohmann::json::array(
+             {createBrushRequest({0, 0, 0}, {256, 32, 128}),
+              createBrushRequest({0, 0, 0}, {64, 32, 64}),
+              nlohmann::json{
+                {"tool", "csg_subtract"}, {"params", {{"target", "last"}}}},
+              nlohmann::json{
+                {"tool", "translate"}, {"params", {{"delta", {0, 0, 512}}}}}})}}}});
+
+    REQUIRE(response["ok"] == true);
+    REQUIRE(brushCount(map) > 0u);
+
+    for (const auto* child : map.worldNode().defaultLayer()->children())
+    {
+      CHECK(child->logicalBounds().min.z() >= 512.0);
+    }
+  }
+
+  SECTION("target 'last' subtracts only the most recent brush")
+  {
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{
+          {"tool", "batch"},
+          {"params",
+           {{"ops",
+             nlohmann::json::array(
+               {createBrushRequest({0, 0, 0}, {256, 32, 128}),
+                createBrushRequest({0, 0, 0}, {64, 32, 64}),
+                nlohmann::json{
+                  {"tool", "csg_subtract"},
+                  {"params", {{"target", "last"}}}}})}}}})["ok"]
+      == true);
+
+    REQUIRE(brushCount(map) > 0u);
+    for (const auto* child : map.worldNode().defaultLayer()->children())
+    {
+      const auto* brushNode = dynamic_cast<const mdl::BrushNode*>(child);
+      REQUIRE(brushNode != nullptr);
+      CHECK_FALSE(brushNode->brush().containsPoint(vm::vec3d{32, 16, 32}));
+    }
+  }
+
+  SECTION("reports when nothing is selected")
+  {
+    const auto response =
+      dispatch(map, nlohmann::json{{"tool", "csg_subtract"}, {"params", {}}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+}
+
+TEST_CASE("csg_merge")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  SECTION("merges two boxes into one convex brush")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+    REQUIRE(dispatch(map, createBrushRequest({64, 0, 0}, {128, 64, 64}))["ok"] == true);
+    mdl::selectAllNodes(map);
+    REQUIRE(brushCount(map) == 2u);
+
+    const auto response = dispatch(
+      map,
+      nlohmann::json{
+        {"tool", "csg_merge"}, {"params", {{"target", "selection"}}}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(brushCount(map) == 1u);
+
+    const auto* merged =
+      dynamic_cast<mdl::BrushNode*>(map.worldNode().defaultLayer()->children().front());
+    REQUIRE(merged != nullptr);
+    CHECK(merged->logicalBounds() == vm::bbox3d{{0, 0, 0}, {128, 64, 64}});
+  }
+}
+
+TEST_CASE("csg_intersect")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  SECTION("keeps only the shared volume")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {128, 128, 128}))["ok"] == true);
+    REQUIRE(dispatch(map, createBrushRequest({64, 64, 0}, {192, 192, 128}))["ok"] == true);
+    mdl::selectAllNodes(map);
+
+    const auto response = dispatch(
+      map,
+      nlohmann::json{
+        {"tool", "csg_intersect"}, {"params", {{"target", "selection"}}}});
+
+    REQUIRE(response["ok"] == true);
+    REQUIRE(brushCount(map) == 1u);
+
+    const auto* result =
+      dynamic_cast<mdl::BrushNode*>(map.worldNode().defaultLayer()->children().front());
+    REQUIRE(result != nullptr);
+    CHECK(result->logicalBounds() == vm::bbox3d{{64, 64, 0}, {128, 128, 128}});
+  }
+
+  SECTION("needs at least two brushes")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+    const auto response =
+      dispatch(map, nlohmann::json{{"tool", "csg_intersect"}, {"params", {}}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+    CHECK(brushCount(map) == 1u);
+  }
+}
+
+TEST_CASE("csg_hollow")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  SECTION("turns one box into a sealed shell")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {512, 512, 256}))["ok"] == true);
+
+    const auto response = dispatch(
+      map, nlohmann::json{{"tool", "csg_hollow"}, {"params", {{"thickness", 16}}}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(brushCount(map) == 6u);
+
+    for (const auto* child : map.worldNode().defaultLayer()->children())
+    {
+      const auto* brushNode = dynamic_cast<const mdl::BrushNode*>(child);
+      REQUIRE(brushNode != nullptr);
+      CHECK_FALSE(brushNode->brush().containsPoint(vm::vec3d{256, 256, 128}));
+    }
+  }
+
+  SECTION("thickness does not depend on the editor's grid")
+  {
+    map.grid().setSize(6);
+
+    REQUIRE(
+      dispatch(map, createBrushRequest({0, 0, 0}, {512, 512, 256}))["ok"] == true);
+    REQUIRE(
+      dispatch(map, nlohmann::json{{"tool", "csg_hollow"}, {"params", {{"thickness", 16}}}})
+        ["ok"]
+      == true);
+
+    auto insideAnyBrush = false;
+    for (const auto* child : map.worldNode().defaultLayer()->children())
+    {
+      const auto* brushNode = dynamic_cast<const mdl::BrushNode*>(child);
+      REQUIRE(brushNode != nullptr);
+      insideAnyBrush =
+        insideAnyBrush || brushNode->brush().containsPoint(vm::vec3d{256, 256, 32});
+    }
+    CHECK_FALSE(insideAnyBrush);
+  }
+
+  SECTION("restores the grid afterwards")
+  {
+    map.grid().setSize(5);
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {512, 512, 256}))["ok"] == true);
+
+    REQUIRE(
+      dispatch(map, nlohmann::json{{"tool", "csg_hollow"}, {"params", {{"thickness", 16}}}})
+        ["ok"]
+      == true);
+
+    CHECK(map.grid().size() == 5);
+  }
+
+  SECTION("rejects a thickness that is not a power of two")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {512, 512, 256}))["ok"] == true);
+
+    const auto response = dispatch(
+      map, nlohmann::json{{"tool", "csg_hollow"}, {"params", {{"thickness", 24}}}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+    CHECK(brushCount(map) == 1u);
+  }
 }
 
 TEST_CASE("set_worldspawn_property")

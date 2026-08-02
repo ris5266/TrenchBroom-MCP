@@ -33,8 +33,10 @@
 #include "vm/scalar.h"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <map>
+#include <optional>
 #include <variant>
 
 namespace tb::mcp
@@ -255,6 +257,7 @@ Result<nlohmann::json, ToolError> addBrushes(
     bounds = vm::merge(bounds, node->logicalBounds());
     context.createdNodes.push_back(node);
   }
+  context.lastOpNodes = nodes;
 
   return nlohmann::json{{"created", nodes.size()}, {"bounds", toJson(bounds)}};
 }
@@ -560,12 +563,13 @@ nlohmann::json targetSchema()
 {
   return nlohmann::json{
     {"type", "string"},
-    {"enum", nlohmann::json::array({"auto", "created", "selection"})},
+    {"enum", nlohmann::json::array({"auto", "created", "last", "selection"})},
     {"description",
-     "What to act on. \"created\" is whatever earlier operations in this same call "
-     "produced, \"selection\" is what is selected in the editor, and \"auto\" (the "
-     "default) means created-if-any, otherwise the selection. Inside a batch, \"auto\" "
-     "lets you build a shape and then transform it."}};
+     "What to act on. \"created\" is everything earlier operations in this same call "
+     "produced, \"last\" is only what the previous operation produced, \"selection\" is "
+     "what is selected in the editor, and \"auto\" (the default) means created-if-any, "
+     "otherwise the selection. Use \"last\" to act on one earlier result, such as "
+     "subtracting only the cutting brush from walls built in the same batch."}};
 }
 
 Result<std::vector<mdl::Node*>, ToolError> resolveTargets(
@@ -574,26 +578,30 @@ Result<std::vector<mdl::Node*>, ToolError> resolveTargets(
   const auto target = readString(params, "target", "auto");
   const auto& selected = context.map.selection().nodes;
 
-  const auto nodes = target == "created"    ? context.createdNodes
-                     : target == "selection" ? selected
-                     : target == "auto"
-                       ? (!context.createdNodes.empty() ? context.createdNodes : selected)
-                       : std::vector<mdl::Node*>{};
-
-  if (target != "auto" && target != "created" && target != "selection")
+  if (
+    target != "auto" && target != "created" && target != "last"
+    && target != "selection")
   {
     return ToolError{
       ErrorCode::InvalidParameters,
-      fmt::format("'target' must be auto, created or selection, got '{}'", target)};
+      fmt::format(
+        "'target' must be auto, created, last or selection, got '{}'", target)};
   }
+
+  const auto nodes = target == "created"     ? context.createdNodes
+                     : target == "last"      ? context.lastOpNodes
+                     : target == "selection" ? selected
+                                             : (!context.createdNodes.empty()
+                                                  ? context.createdNodes
+                                                  : selected);
 
   if (nodes.empty())
   {
     return ToolError{
       ErrorCode::InvalidParameters,
-      target == "created"
-        ? "nothing was created earlier in this call to transform"
-        : "nothing is selected in the editor to transform"};
+      target == "created"  ? "nothing was created earlier in this call"
+      : target == "last"   ? "no previous operation in this call produced anything"
+                           : "nothing is selected in the editor"};
   }
 
   return nodes;
@@ -729,6 +737,136 @@ Result<nlohmann::json, ToolError> scale(ToolContext& context, const nlohmann::js
                                  });
                       });
            });
+}
+
+// -- CSG -------------------------------------------------------------------------------
+
+Result<nlohmann::json, ToolError> applyCsg(
+  ToolContext& context,
+  const nlohmann::json& params,
+  const std::string& what,
+  const std::function<bool(mdl::Map&)>& apply)
+{
+  return resolveTargets(context, params)
+         | kdl::and_then(
+           [&](const auto& nodes) -> Result<nlohmann::json, ToolError> {
+             auto& map = context.map;
+
+             mdl::deselectAll(map);
+             mdl::selectNodes(map, nodes);
+
+             if (!apply(map))
+             {
+               return ToolError{
+                 ErrorCode::OperationFailed,
+                 fmt::format(
+                   "could not {} the selected brushes; CSG needs solid brushes that "
+                   "actually overlap",
+                   what)};
+             }
+
+             context.createdNodes = map.selection().nodes;
+             context.lastOpNodes = context.createdNodes;
+
+             auto result = nlohmann::json{{"created", context.createdNodes.size()}};
+             if (!context.createdNodes.empty())
+             {
+               result["bounds"] = toJson(boundsOf(context.createdNodes));
+             }
+             return result;
+           });
+}
+
+Result<nlohmann::json, ToolError> csgMerge(
+  ToolContext& context, const nlohmann::json& params)
+{
+  return applyCsg(context, params, "merge", [](auto& map) {
+    return mdl::csgConvexMerge(map);
+  });
+}
+
+Result<nlohmann::json, ToolError> csgSubtract(
+  ToolContext& context, const nlohmann::json& params)
+{
+  return applyCsg(context, params, "subtract", [](auto& map) {
+    return mdl::csgSubtract(map);
+  });
+}
+
+Result<nlohmann::json, ToolError> csgIntersect(
+  ToolContext& context, const nlohmann::json& params)
+{
+  return resolveTargets(context, params)
+         | kdl::and_then([&](const auto& nodes) -> Result<nlohmann::json, ToolError> {
+             if (nodes.size() < 2)
+             {
+               return ToolError{
+                 ErrorCode::InvalidParameters,
+                 "intersect needs at least two brushes"};
+             }
+             return applyCsg(context, params, "intersect", [](auto& map) {
+               return mdl::csgIntersect(map);
+             });
+           });
+}
+
+Result<nlohmann::json, ToolError> csgHollow(
+  ToolContext& context, const nlohmann::json& params)
+{
+  auto& map = context.map;
+
+  auto gridSize = std::optional<int>{};
+  if (params.contains("thickness"))
+  {
+    const auto thicknessResult = readThickness(params);
+    if (thicknessResult.is_error())
+    {
+      return std::get<ToolError>(std::move(thicknessResult).error());
+    }
+    const auto thickness = thicknessResult.value();
+
+    const auto exponent = std::log2(thickness);
+    const auto rounded = int(std::lround(exponent));
+    if (
+      std::abs(exponent - double(rounded)) > 1e-9 || rounded < mdl::Grid::MinSize
+      || rounded > mdl::Grid::MaxSize)
+    {
+      return ToolError{
+        ErrorCode::InvalidParameters,
+        fmt::format(
+          "'thickness' must be a power of two between {} and {}, got {}",
+          mdl::Grid::actualSize(mdl::Grid::MinSize),
+          mdl::Grid::actualSize(mdl::Grid::MaxSize),
+          thickness)};
+    }
+    gridSize = rounded;
+  }
+
+  const auto previousSize = map.grid().size();
+  const auto previousSnap = map.grid().snap();
+  if (gridSize)
+  {
+    if (!previousSnap)
+    {
+      map.grid().toggleSnap();
+    }
+    map.grid().setSize(*gridSize);
+  }
+
+  auto result = applyCsg(context, params, "hollow", [](auto& mapRef) {
+    return mdl::csgHollow(mapRef);
+  });
+
+  if (gridSize)
+  {
+    map.grid().setSize(previousSize);
+    if (!previousSnap)
+    {
+      map.grid().toggleSnap();
+    }
+  }
+
+  return result;
 }
 
 // -- set_worldspawn_property -----------------------------------------------------------
@@ -971,6 +1109,56 @@ const auto toolTable = std::vector<Tool>{
         {"target", targetSchema()}}},
       {"required", nlohmann::json::array()}},
     scale},
+  Tool{
+    "csg_merge",
+    "Merge brushes into their convex hull. The result is one brush, so this only makes "
+    "sense for shapes that are actually convex together.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties", {{"target", targetSchema()}}},
+      {"required", nlohmann::json::array()}},
+    csgMerge},
+  Tool{
+    "csg_subtract",
+    "Carve the target brushes out of every brush they touch, then delete them. This is "
+    "how you cut a doorway or window: build a box where the hole should be, then "
+    "subtract it. The tool brush does not survive the operation.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties", {{"target", targetSchema()}}},
+      {"required", nlohmann::json::array()}},
+    csgSubtract},
+  Tool{
+    "csg_intersect",
+    "Replace the target brushes with the volume they all share. Needs at least two, and "
+    "produces nothing if they do not overlap.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties", {{"target", targetSchema()}}},
+      {"required", nlohmann::json::array()}},
+    csgIntersect},
+  Tool{
+    "csg_hollow",
+    "Turn solid brushes into hollow shells with walls of the given thickness, replacing "
+    "each brush with the six that enclose it. A quick way to make a sealed room from a "
+    "single box.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"thickness",
+         {{"type", "number"},
+          {"exclusiveMinimum", 0},
+          {"description",
+           "Wall thickness in world units. Must be a power of two between 0.125 and 256, "
+           "because it is applied through the editor's grid. Defaults to the current "
+           "grid size."}}},
+        {"target", targetSchema()}}},
+      {"required", nlohmann::json::array()}},
+    csgHollow},
   Tool{
     "set_worldspawn_property",
     "Set a key on the worldspawn entity, such as 'wad' to attach a texture WAD, or "
