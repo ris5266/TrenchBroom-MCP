@@ -62,6 +62,7 @@ enum class ToolKind
 {
   ReadOnly,
   Mutating,
+  Direct,
 };
 
 struct Tool

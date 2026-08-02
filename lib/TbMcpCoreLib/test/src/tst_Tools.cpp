@@ -19,7 +19,9 @@
 #include "vm/bbox.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -199,6 +201,15 @@ TEST_CASE("get_scene")
 
     CHECK(map.selection().nodes == selectionBefore);
     CHECK(map.modificationCount() == modificationCountBefore);
+
+    // The strong form of the guarantee: the next undo must still be the user's edit.
+    // Selection changes are undoable commands, so a read that saved and restored the
+    // selection the naive way would leave "Select Objects" entries here instead.
+    REQUIRE(map.undoCommandName() != nullptr);
+    CHECK(*map.undoCommandName() == "MCP: create_brush");
+
+    map.undoCommand();
+    CHECK(brushCount(map) == 0u);
   }
 }
 
@@ -1282,6 +1293,267 @@ TEST_CASE("tools that need the editor UI")
 
   CHECK(response["ok"] == false);
   CHECK(response["error"]["code"] == "operation_failed");
+}
+
+TEST_CASE("delete_objects")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  SECTION("deletes the editor selection")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+    REQUIRE(brushCount(map) == 1u);
+
+    const auto response =
+      dispatch(map, nlohmann::json{{"tool", "delete_objects"}, {"params", {}}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["deleted"] == 1);
+    CHECK(brushCount(map) == 0u);
+  }
+
+  SECTION("deletes only what a selector matches")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}, "stone"))["ok"] == true);
+    REQUIRE(dispatch(map, createBrushRequest({128, 0, 0}, {192, 64, 64}, "wood"))["ok"] == true);
+
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{
+          {"tool", "delete_objects"},
+          {"params", {{"select", {{"material", "stone"}}}}}})["ok"]
+      == true);
+
+    REQUIRE(brushCount(map) == 1u);
+    const auto* remaining =
+      dynamic_cast<mdl::BrushNode*>(map.worldNode().defaultLayer()->children().front());
+    REQUIRE(remaining != nullptr);
+    CHECK(remaining->brush().faces().front().materialName() == "wood");
+  }
+
+  SECTION("is a single undo step")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+    REQUIRE(dispatch(map, nlohmann::json{{"tool", "delete_objects"}, {"params", {}}})["ok"]
+            == true);
+    REQUIRE(brushCount(map) == 0u);
+
+    map.undoCommand();
+
+    CHECK(brushCount(map) == 1u);
+  }
+
+  SECTION("building then deleting in one batch leaves nothing dangling")
+  {
+    // The deleted nodes must not survive in the call's created-node list, or the
+    // dispatcher would select freed pointers when the batch finishes.
+    const auto response = dispatch(
+      map,
+      nlohmann::json{
+        {"tool", "batch"},
+        {"params",
+         {{"ops",
+           nlohmann::json::array(
+             {createBrushRequest({0, 0, 0}, {64, 64, 64}),
+              createBrushRequest({128, 0, 0}, {192, 64, 64}),
+              nlohmann::json{{"tool", "delete_objects"}, {"params", {}}}})}}}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(brushCount(map) == 0u);
+    CHECK(map.selection().nodes.empty());
+  }
+
+  SECTION("reports when there is nothing to delete")
+  {
+    const auto response =
+      dispatch(map, nlohmann::json{{"tool", "delete_objects"}, {"params", {}}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+}
+
+TEST_CASE("duplicate")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  SECTION("copies in place")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+    const auto response =
+      dispatch(map, nlohmann::json{{"tool", "duplicate"}, {"params", {}}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["created"] == 1);
+    CHECK(brushCount(map) == 2u);
+  }
+
+  SECTION("the copy is what a following operation moves")
+  {
+    // A column repeated along a wall: duplicate, then shift the copy.
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{
+          {"tool", "batch"},
+          {"params",
+           {{"name", "two columns"},
+            {"ops",
+             nlohmann::json::array(
+               {createBrushRequest({0, 0, 0}, {64, 64, 256}),
+                nlohmann::json{{"tool", "duplicate"}, {"params", {}}},
+                nlohmann::json{
+                  {"tool", "translate"},
+                  {"params", {{"delta", {256, 0, 0}}}}}})}}}})["ok"]
+      == true);
+
+    REQUIRE(brushCount(map) == 2u);
+
+    // One original where it was, one copy shifted along X.
+    auto minX = std::vector<double>{};
+    for (const auto* child : map.worldNode().defaultLayer()->children())
+    {
+      minX.push_back(child->logicalBounds().min.x());
+    }
+    std::ranges::sort(minX);
+    CHECK(minX[0] == Approx(0.0).margin(0.01));
+    CHECK(minX[1] == Approx(256.0).margin(0.01));
+  }
+
+  SECTION("is a single undo step")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+    REQUIRE(dispatch(map, nlohmann::json{{"tool", "duplicate"}, {"params", {}}})["ok"] == true);
+    REQUIRE(brushCount(map) == 2u);
+
+    map.undoCommand();
+
+    CHECK(brushCount(map) == 1u);
+  }
+}
+
+TEST_CASE("undo and redo")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  SECTION("undo reverses the last step and redo puts it back")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+    REQUIRE(brushCount(map) == 1u);
+
+    const auto undone = dispatch(map, nlohmann::json{{"tool", "undo"}});
+    REQUIRE(undone["ok"] == true);
+    CHECK(brushCount(map) == 0u);
+
+    const auto redone = dispatch(map, nlohmann::json{{"tool", "redo"}});
+    REQUIRE(redone["ok"] == true);
+    CHECK(brushCount(map) == 1u);
+  }
+
+  SECTION("undo reports the name of the step it reversed")
+  {
+    REQUIRE(
+      dispatch(
+        map,
+        nlohmann::json{
+          {"tool", "batch"},
+          {"params",
+           {{"name", "build wall"},
+            {"ops", nlohmann::json::array({createBrushRequest({0, 0, 0}, {64, 64, 64})})}}}})
+        ["ok"]
+      == true);
+
+    const auto response = dispatch(map, nlohmann::json{{"tool", "undo"}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["undone"] == "MCP: build wall");
+  }
+
+  SECTION("undo does not add a step of its own")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+    REQUIRE(dispatch(map, createBrushRequest({128, 0, 0}, {192, 64, 64}))["ok"] == true);
+    REQUIRE(brushCount(map) == 2u);
+
+    REQUIRE(dispatch(map, nlohmann::json{{"tool", "undo"}})["ok"] == true);
+    REQUIRE(dispatch(map, nlohmann::json{{"tool", "undo"}})["ok"] == true);
+
+    CHECK(brushCount(map) == 0u);
+  }
+
+  SECTION("reports an empty undo stack")
+  {
+    const auto response = dispatch(map, nlohmann::json{{"tool", "undo"}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "operation_failed");
+  }
+
+  SECTION("reports nothing to redo")
+  {
+    const auto response = dispatch(map, nlohmann::json{{"tool", "redo"}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "operation_failed");
+  }
+}
+
+TEST_CASE("save_map")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  SECTION("refuses to save a new map without a path")
+  {
+    const auto response = dispatch(map, nlohmann::json{{"tool", "save_map"}, {"params", {}}});
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+
+  SECTION("writes the map to the given path and clears the modified flag")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+    REQUIRE(map.modified());
+
+    const auto path = std::filesystem::temp_directory_path() / "tb_mcp_save_test.map";
+    std::filesystem::remove(path);
+
+    const auto response = dispatch(
+      map,
+      nlohmann::json{{"tool", "save_map"}, {"params", {{"path", path.string()}}}});
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["modified"] == false);
+    CHECK(std::filesystem::exists(path));
+    CHECK(std::filesystem::file_size(path) > 0u);
+
+    std::filesystem::remove(path);
+  }
+
+  SECTION("saving does not add an undo step")
+  {
+    REQUIRE(dispatch(map, createBrushRequest({0, 0, 0}, {64, 64, 64}))["ok"] == true);
+
+    const auto path = std::filesystem::temp_directory_path() / "tb_mcp_save_test2.map";
+    std::filesystem::remove(path);
+    REQUIRE(
+      dispatch(
+        map, nlohmann::json{{"tool", "save_map"}, {"params", {{"path", path.string()}}}})
+        ["ok"]
+      == true);
+
+    // Undo must still reach the brush, not a phantom step from saving.
+    map.undoCommand();
+    CHECK(brushCount(map) == 0u);
+
+    std::filesystem::remove(path);
+  }
 }
 
 TEST_CASE("set_worldspawn_property")

@@ -2,6 +2,8 @@
 
 #include "mcp/JsonUtils.h"
 
+#include "base/Error.h"
+
 #include "mdl/Brush.h"
 #include "mdl/BrushBuilder.h"
 #include "mdl/BrushNode.h"
@@ -39,6 +41,7 @@
 #include "vm/scalar.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <cmath>
 #include <functional>
 #include <map>
@@ -1237,6 +1240,112 @@ Result<nlohmann::json, ToolError> listEntityDefinitions(
     {"game", context.map.gameInfo().gameConfig.name}};
 }
 
+// -- delete and duplicate --------------------------------------------------------------
+
+Result<nlohmann::json, ToolError> deleteObjects(
+  ToolContext& context, const nlohmann::json& params)
+{
+  return resolveTargets(context, params)
+         | kdl::and_then([&](const auto& nodes) -> Result<nlohmann::json, ToolError> {
+             auto& map = context.map;
+             const auto count = nodes.size();
+             const auto bounds = toJson(boundsOf(nodes));
+
+             mdl::deselectAll(map);
+             mdl::selectNodes(map, nodes);
+             mdl::removeSelectedNodes(map);
+
+             context.createdNodes.clear();
+             context.lastOpNodes.clear();
+
+             return nlohmann::json{{"deleted", count}, {"bounds", bounds}};
+           });
+}
+
+Result<nlohmann::json, ToolError> duplicate(
+  ToolContext& context, const nlohmann::json& params)
+{
+  return resolveTargets(context, params)
+         | kdl::and_then([&](const auto& nodes) -> Result<nlohmann::json, ToolError> {
+             auto& map = context.map;
+
+             mdl::deselectAll(map);
+             mdl::selectNodes(map, nodes);
+             mdl::duplicateSelectedNodes(map);
+
+             context.createdNodes = map.selection().nodes;
+             context.lastOpNodes = context.createdNodes;
+
+             if (context.createdNodes.empty())
+             {
+               return ToolError{
+                 ErrorCode::OperationFailed, "nothing was duplicated"};
+             }
+
+             return nlohmann::json{
+               {"created", context.createdNodes.size()},
+               {"bounds", toJson(boundsOf(context.createdNodes))}};
+           });
+}
+
+// -- save, undo and redo ---------------------------------------------------------------
+
+Result<nlohmann::json, ToolError> saveMap(
+  ToolContext& context, const nlohmann::json& params)
+{
+  auto& map = context.map;
+
+  const auto path = readString(params, "path");
+  if (path.empty() && !map.persistent())
+  {
+    return ToolError{
+      ErrorCode::InvalidParameters,
+      "this map has never been saved, so 'path' is required"};
+  }
+
+  auto result = path.empty() ? map.save() : map.saveAs(std::filesystem::path{path});
+  if (result.is_error())
+  {
+    return ToolError{
+      ErrorCode::OperationFailed,
+      fmt::format(
+        "could not save: {}", std::get<Error>(std::move(result).error()).msg)};
+  }
+
+  return nlohmann::json{{"path", map.path().string()}, {"modified", map.modified()}};
+}
+
+Result<nlohmann::json, ToolError> undo(ToolContext& context, const nlohmann::json&)
+{
+  auto& map = context.map;
+
+  if (!map.canUndoCommand())
+  {
+    return ToolError{ErrorCode::OperationFailed, "there is nothing to undo"};
+  }
+
+  const auto* name = map.undoCommandName();
+  const auto undone = name ? *name : std::string{"the last command"};
+
+  map.undoCommand();
+  return nlohmann::json{{"undone", undone}};
+}
+
+Result<nlohmann::json, ToolError> redo(ToolContext& context, const nlohmann::json&)
+{
+  auto& map = context.map;
+
+  const auto* name = map.redoCommandName();
+  if (!name)
+  {
+    return ToolError{ErrorCode::OperationFailed, "there is nothing to redo"};
+  }
+  const auto redone = *name;
+
+  map.redoCommand();
+  return nlohmann::json{{"redone", redone}};
+}
+
 // -- host-backed tools -----------------------------------------------------------------
 
 Result<nlohmann::json, ToolError> requireHost(const ToolContext& context)
@@ -1370,8 +1479,8 @@ const auto toolTable = std::vector<Tool>{
   Tool{
     "get_scene",
     "Summarise the open map: layers, groups, brush counts, entity classname counts, "
-    "world bounds, grid size and the current selection. Drill into a group for detail "
-    "rather than asking for every brush.",
+    "world bounds, grid size and the current selection. This is a summary, not per-brush "
+    "detail; use select_objects with a query to find specific geometry.",
     ToolKind::ReadOnly,
     emptySchema(),
     getScene},
@@ -1695,6 +1804,56 @@ const auto toolTable = std::vector<Tool>{
           {"description", "Image width in pixels. Defaults to 768."}}}}},
       {"required", nlohmann::json::array()}},
     captureViewport},
+  Tool{
+    "delete_objects",
+    "Delete objects from the map. Prefer this over the editor's Delete action, which is "
+    "only available while the map view has keyboard focus.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties", {{"target", targetSchema()}, {"select", selectorSchema()}}},
+      {"required", nlohmann::json::array()}},
+    deleteObjects},
+  Tool{
+    "duplicate",
+    "Copy objects in place and leave the copies as this call's output, so a following "
+    "operation moves the copy rather than the original. The usual way to repeat "
+    "architecture such as columns or windows.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties", {{"target", targetSchema()}, {"select", selectorSchema()}}},
+      {"required", nlohmann::json::array()}},
+    duplicate},
+  Tool{
+    "save_map",
+    "Write the map to disk. Without a path this saves over the file the map was opened "
+    "from. Nothing built through these tools survives closing the editor until this is "
+    "called.",
+    ToolKind::Direct,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"path",
+         {{"type", "string"},
+          {"description",
+           "Where to save. Required the first time for a map that has never been "
+           "saved."}}}}},
+      {"required", nlohmann::json::array()}},
+    saveMap},
+  Tool{
+    "undo",
+    "Undo the last step, whether it came from these tools or from the user editing by "
+    "hand. Reports what was undone.",
+    ToolKind::Direct,
+    emptySchema(),
+    undo},
+  Tool{
+    "redo",
+    "Redo the step that was last undone.",
+    ToolKind::Direct,
+    emptySchema(),
+    redo},
   Tool{
     "set_worldspawn_property",
     "Set a key on the worldspawn entity, such as 'wad' to attach a texture WAD, or "

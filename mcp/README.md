@@ -83,6 +83,10 @@ explanation. Override the socket with `TB_MCP_SOCKET` and the schema with
 | `invoke_action` | write | Run one of TrenchBroom's own named actions |
 | `list_actions` | read | The named actions and whether each is enabled |
 | `capture_viewport` | read | Render a view of the map as a PNG |
+| `delete_objects` | write | Delete objects; works regardless of window focus |
+| `duplicate` | write | Copy objects in place; the copies become the call's output |
+| `save_map` | write | Write the map to disk |
+| `undo` / `redo` | write | Step the editor's history; reports what was undone |
 | `set_worldspawn_property` | write | Sets a worldspawn key, e.g. `wad` to attach a texture WAD |
 | `batch` | write | Several operations as a single undo step |
 
@@ -197,8 +201,9 @@ back, when the brushes do not overlap in a way the operation can use.
   the `name` you pass (`MCP: build atrium`).
 - **A batch is all or nothing.** If any operation fails the transaction is rolled back, so
   a half-built room never reaches the map.
-- **Reads are inert.** Read-only tools restore the selection via `PushSelection` and add
-  nothing to the undo stack, so inspecting the map cannot disturb work in progress.
+- **Reads are inert.** Read-only tools run inside a transaction that is rolled back, so
+  they provably leave both the selection and the undo stack exactly as they found them —
+  the user's next Ctrl+Z is still their own edit, never a leftover selection change.
 - **Writes leave their output selected**, which is what you would see after making the
   same edit by hand.
 
@@ -304,4 +309,6 @@ Still to come: `create_entity` against the shipped FGDs, a richer selector engin
 addressing geometry by material, classname or layer, `invoke_action` over TrenchBroom's
 ~200 named actions, and orthographic viewport captures.
 
-`flip` and `shear` exist in the model layer and would be short additions.
+Face-level editing (`set_face_attributes` for retexturing and UVs), groups and layers,
+TrenchBroom's issue validators (`list_issues`), and `point_contents`/`pick` for checking
+that a map is sealed would all be straightforward next steps over existing model APIs.

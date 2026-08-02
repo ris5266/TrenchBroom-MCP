@@ -10,7 +10,7 @@
     "readOnly": true
   },
   {
-    "description": "Summarise the open map: layers, groups, brush counts, entity classname counts, world bounds, grid size and the current selection. Drill into a group for detail rather than asking for every brush.",
+    "description": "Summarise the open map: layers, groups, brush counts, entity classname counts, world bounds, grid size and the current selection. This is a summary, not per-brush detail; use select_objects with a query to find specific geometry.",
     "inputSchema": {
       "properties": {},
       "required": [],
@@ -1096,6 +1096,199 @@
     },
     "name": "capture_viewport",
     "readOnly": true
+  },
+  {
+    "description": "Delete objects from the map. Prefer this over the editor's Delete action, which is only available while the map view has keyboard focus.",
+    "inputSchema": {
+      "properties": {
+        "select": {
+          "description": "Finds objects already in the map. All given fields must match. Resolved fresh on every call, so undo and redo cannot invalidate it.",
+          "properties": {
+            "all": {
+              "description": "Every object in the map.",
+              "type": "boolean"
+            },
+            "bounds": {
+              "description": "An axis-aligned box in world units. Corners may be given in either order.",
+              "properties": {
+                "max": {
+                  "description": "The opposite corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "min": {
+                  "description": "One corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "min",
+                "max"
+              ],
+              "type": "object"
+            },
+            "classname": {
+              "description": "Entities with this classname, and the brushes belonging to them. A trailing * matches a prefix, e.g. \"func_*\".",
+              "type": "string"
+            },
+            "layer": {
+              "description": "Objects in the named layer.",
+              "type": "string"
+            },
+            "material": {
+              "description": "Brushes with at least one face using this material. A trailing * matches a prefix.",
+              "type": "string"
+            },
+            "mode": {
+              "description": "How 'bounds' matches: fully inside it (default) or merely overlapping it.",
+              "enum": [
+                "contained",
+                "touching"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "target": {
+          "description": "What to act on. \"created\" is everything earlier operations in this same call produced, \"last\" is only what the previous operation produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Use \"last\" to act on one earlier result, such as subtracting only the cutting brush from walls built in the same batch.",
+          "enum": [
+            "auto",
+            "created",
+            "last",
+            "selection"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "delete_objects",
+    "readOnly": false
+  },
+  {
+    "description": "Copy objects in place and leave the copies as this call's output, so a following operation moves the copy rather than the original. The usual way to repeat architecture such as columns or windows.",
+    "inputSchema": {
+      "properties": {
+        "select": {
+          "description": "Finds objects already in the map. All given fields must match. Resolved fresh on every call, so undo and redo cannot invalidate it.",
+          "properties": {
+            "all": {
+              "description": "Every object in the map.",
+              "type": "boolean"
+            },
+            "bounds": {
+              "description": "An axis-aligned box in world units. Corners may be given in either order.",
+              "properties": {
+                "max": {
+                  "description": "The opposite corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "min": {
+                  "description": "One corner, as [x, y, z].",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "min",
+                "max"
+              ],
+              "type": "object"
+            },
+            "classname": {
+              "description": "Entities with this classname, and the brushes belonging to them. A trailing * matches a prefix, e.g. \"func_*\".",
+              "type": "string"
+            },
+            "layer": {
+              "description": "Objects in the named layer.",
+              "type": "string"
+            },
+            "material": {
+              "description": "Brushes with at least one face using this material. A trailing * matches a prefix.",
+              "type": "string"
+            },
+            "mode": {
+              "description": "How 'bounds' matches: fully inside it (default) or merely overlapping it.",
+              "enum": [
+                "contained",
+                "touching"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "target": {
+          "description": "What to act on. \"created\" is everything earlier operations in this same call produced, \"last\" is only what the previous operation produced, \"selection\" is what is selected in the editor, and \"auto\" (the default) means created-if-any, otherwise the selection. Use \"last\" to act on one earlier result, such as subtracting only the cutting brush from walls built in the same batch.",
+          "enum": [
+            "auto",
+            "created",
+            "last",
+            "selection"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "duplicate",
+    "readOnly": false
+  },
+  {
+    "description": "Write the map to disk. Without a path this saves over the file the map was opened from. Nothing built through these tools survives closing the editor until this is called.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "description": "Where to save. Required the first time for a map that has never been saved.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "save_map",
+    "readOnly": false
+  },
+  {
+    "description": "Undo the last step, whether it came from these tools or from the user editing by hand. Reports what was undone.",
+    "inputSchema": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "undo",
+    "readOnly": false
+  },
+  {
+    "description": "Redo the step that was last undone.",
+    "inputSchema": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "redo",
+    "readOnly": false
   },
   {
     "description": "Set a key on the worldspawn entity, such as 'wad' to attach a texture WAD, or 'message' to name the level.",

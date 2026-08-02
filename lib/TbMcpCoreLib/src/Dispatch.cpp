@@ -4,7 +4,6 @@
 
 #include "mdl/Map.h"
 #include "mdl/Map_Selection.h"
-#include "mdl/PushSelection.h"
 #include "mdl/Transaction.h"
 
 #include <fmt/format.h>
@@ -65,7 +64,20 @@ nlohmann::json runReadOnly(
   mdl::Map& map, HostContext* host, const Tool& tool, const nlohmann::json& params)
 {
   auto context = ToolContext{map, host, {}, {}};
-  const auto pushSelection = mdl::PushSelection{map};
+
+  auto transaction = mdl::Transaction{map, ""};
+  auto result = tool.handler(context, params);
+  transaction.cancel();
+
+  return result.is_error()
+           ? errorResponse(std::move(result).error())
+           : nlohmann::json{{"ok", true}, {"result", std::move(result).value()}};
+}
+
+nlohmann::json runDirect(
+  mdl::Map& map, HostContext* host, const Tool& tool, const nlohmann::json& params)
+{
+  auto context = ToolContext{map, host, {}, {}};
 
   auto result = tool.handler(context, params);
   return result.is_error()
@@ -103,6 +115,11 @@ nlohmann::json dispatch(
     if (tool->kind == ToolKind::ReadOnly)
     {
       return runReadOnly(map, host, *tool, params);
+    }
+
+    if (tool->kind == ToolKind::Direct)
+    {
+      return runDirect(map, host, *tool, params);
     }
 
     const auto name = params.contains("name") && params.at("name").is_string()
