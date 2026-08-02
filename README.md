@@ -1,6 +1,47 @@
-# TrenchBroom
+# TrenchBroom-MCP
 
 [![TrenchBroom Icon](app/TrenchBroom/resources/graphics/images/AppIcon.png)](https://www.youtube.com/watch?v=shcAvnYp9ow)
+
+A fork of [TrenchBroom](https://github.com/TrenchBroom/TrenchBroom) that adds an **MCP
+server**, so an AI assistant can build geometry in the editor.
+
+```
+Claude  <--MCP stdio-->  trenchbroom-mcp (Python)
+                              |
+                    /tmp/trenchbroom-mcp-<user>
+                              |
+                   [ TrenchBroom, TB_ENABLE_MCP ]
+                     QLocalServer on the GUI thread
+                              |
+                     mdl::Map + CommandProcessor
+```
+
+**→ See [mcp/README.md](mcp/README.md) for setup, the tool list and design notes.**
+
+### Quick start
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DTB_ENABLE_MCP=1
+cmake --build build --target TrenchBroom
+```
+
+Enable it in `~/.TrenchBroom/Preferences.json` (off by default, it opens a socket that
+can drive the editor):
+
+```json
+{ "mcp/Enable server": true }
+```
+
+Register the bridge, with `mcp/` on `PYTHONPATH`:
+
+```bash
+claude mcp add trenchbroom -- python3 -m trenchbroom_mcp.server
+```
+
+
+---
+
+## About TrenchBroom
 
 TrenchBroom is a modern cross-platform level editor for Quake-engine based games.
 

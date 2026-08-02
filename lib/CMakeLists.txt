@@ -3,6 +3,12 @@ add_subdirectory(TbBaseLib)
 add_subdirectory(TbElLib)
 add_subdirectory(TbFsLib)
 add_subdirectory(TbGlLib)
+
+if(TB_ENABLE_MCP)
+  add_subdirectory(TbMcpCoreLib)
+  add_subdirectory(TbMcpLib)
+endif()
+
 add_subdirectory(TbMdlLib)
 add_subdirectory(TbPreferencesLib)
 add_subdirectory(TbRenderLib)

@@ -1,0 +1,124 @@
+[
+  {
+    "description": "Check that TrenchBroom is reachable and report which map is open.",
+    "inputSchema": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "ping",
+    "readOnly": true
+  },
+  {
+    "description": "Summarise the open map: layers, groups, brush counts, entity classname counts, world bounds, grid size and the current selection. Drill into a group for detail rather than asking for every brush.",
+    "inputSchema": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "get_scene",
+    "readOnly": true
+  },
+  {
+    "description": "Create an axis-aligned box brush in the current layer.",
+    "inputSchema": {
+      "properties": {
+        "bounds": {
+          "description": "An axis-aligned box in world units. Corners may be given in either order.",
+          "properties": {
+            "max": {
+              "description": "The opposite corner, as [x, y, z].",
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            },
+            "min": {
+              "description": "One corner, as [x, y, z].",
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            }
+          },
+          "required": [
+            "min",
+            "max"
+          ],
+          "type": "object"
+        },
+        "material": {
+          "description": "Material to apply to all six faces. Defaults to the editor's current material.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bounds"
+      ],
+      "type": "object"
+    },
+    "name": "create_brush",
+    "readOnly": false
+  },
+  {
+    "description": "Set a key on the worldspawn entity, such as 'wad' to attach a texture WAD, or 'message' to name the level.",
+    "inputSchema": {
+      "properties": {
+        "key": {
+          "description": "Property key, e.g. \"wad\".",
+          "type": "string"
+        },
+        "value": {
+          "description": "Property value.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "type": "object"
+    },
+    "name": "set_worldspawn_property",
+    "readOnly": false
+  },
+  {
+    "description": "Run several operations as a single undo step. Either all of them apply or, if any fails, none do. Use this for anything built from more than one or two brushes.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "description": "Name shown in TrenchBroom's undo history.",
+          "type": "string"
+        },
+        "ops": {
+          "description": "Operations to run in order.",
+          "items": {
+            "properties": {
+              "params": {
+                "type": "object"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tool"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "ops"
+      ],
+      "type": "object"
+    },
+    "name": "batch",
+    "readOnly": false
+  }
+]

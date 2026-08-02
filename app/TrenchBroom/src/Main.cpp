@@ -46,6 +46,10 @@
 #include "ui/RecentDocuments.h"
 #include "ui/SystemPaths.h"
 
+#ifdef TB_ENABLE_MCP
+#include "mcp/McpServer.h"
+#endif
+
 using namespace tb;
 using namespace tb::ui;
 
@@ -336,6 +340,33 @@ int main(int argc, char* argv[])
   app.setQuitOnLastWindowClosed(false);
   populateMainMenu(*appController);
   installFileEventFilter(*appController);
+#endif
+
+#ifdef TB_ENABLE_MCP
+  auto mcpServer = mcp::McpServer{*appController};
+  const auto updateMcpServer = [&]() {
+    if (pref(Preferences::McpServerEnabled))
+    {
+      if (!mcpServer.start())
+      {
+        qWarning(
+          "Could not start the MCP server: %s", qPrintable(mcpServer.errorString()));
+      }
+    }
+    else
+    {
+      mcpServer.stop();
+    }
+  };
+  updateMcpServer();
+  auto mcpPreferenceConnection =
+    PreferenceManager::instance().preferenceDidChangeNotifier.connect(
+      [&](const auto& path) {
+        if (path == Preferences::McpServerEnabled.path)
+        {
+          updateMcpServer();
+        }
+      });
 #endif
 
   appController->askForAutoUpdates();

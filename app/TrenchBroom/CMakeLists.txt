@@ -136,6 +136,11 @@ target_link_libraries(TrenchBroom
     TbUiLib
 )
 
+if(TB_ENABLE_MCP)
+  target_link_libraries(TrenchBroom PRIVATE TbMcpLib)
+  target_compile_definitions(TrenchBroom PRIVATE TB_ENABLE_MCP)
+endif()
+
 if(COMPILER_IS_MSVC)
     # Request 8MB stack on Windows. Default is 1MB and we need more for the
     # current AABB builder on large maps.

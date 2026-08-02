@@ -111,5 +111,11 @@ set(APP_BUILD_TYPE "${CMAKE_BUILD_TYPE}")
 # Some global variables used in several targets
 set(TB_RESOURCE_DIR "${CMAKE_SOURCE_DIR}/app/TrenchBroom/resources")
 
+option(TB_ENABLE_MCP "Build the MCP automation server into TrenchBroom" OFF)
+
+if(TB_ENABLE_MCP)
+  message(STATUS "MCP automation server enabled")
+endif()
+
 add_subdirectory(lib)
 add_subdirectory(app)

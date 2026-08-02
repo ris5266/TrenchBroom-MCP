@@ -46,6 +46,8 @@ inline auto EnableDraftReleaseUpdates = Preference<bool>{
 inline auto IncludeDraftReleaseUpdates = Preference<bool>{
   "updater/Include draft releases", false, PreferencePersistencePolicy::Transient};
 
+inline auto McpServerEnabled = Preference<bool>{"mcp/Enable server", false};
+
 inline auto MapViewLayout = Preference<int>{"Views/Map view layout", 0};
 
 inline const auto SystemTheme = std::string{"System"};
