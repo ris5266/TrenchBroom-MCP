@@ -64,8 +64,25 @@ explanation. Override the socket with `TB_MCP_SOCKET` and the schema with
 | `ping` | read | Confirms the editor is reachable, reports the open map |
 | `get_scene` | read | Layers, groups, brush counts, entity classname counts, bounds, grid, selection |
 | `create_brush` | write | One axis-aligned box brush |
+| `create_cylinder` | write | Cylinder, or a hollow tube when given a `thickness` |
+| `create_cone` | write | Cone tapering along an axis |
+| `create_sphere` | write | Sphere, `uv` (stacked rings) or `ico` (subdivided triangles) |
+| `create_arch` | write | Semicircular arch as a band of wedge brushes |
 | `set_worldspawn_property` | write | Sets a worldspawn key, e.g. `wad` to attach a texture WAD |
 | `batch` | write | Several operations as a single undo step |
+
+Every shape is inscribed in a `bounds` box and takes an optional `material`. The curved
+ones share two more:
+
+- **`axis`** (`"x"`, `"y"`, `"z"`, default `"z"`) — what the shape is revolved around. For
+  the arch it is the direction the opening runs through, as for a tunnel.
+- **`circle`** — how the cross-section is approximated: `alignment` of `"edge"` (a flat
+  face on the axes), `"vertex"` (a corner there) or `"scalable"` (subdivided so the shape
+  survives non-uniform scaling), plus `sides` (default 8) or `precision`.
+
+`create_cylinder` with a `thickness`, and `create_arch`, each produce **several** brushes
+from one call. They still land as a single undo step, and `result.created` reports how
+many.
 
 ### Guarantees
 
@@ -145,8 +162,9 @@ cmake --build build --target TbMcpCoreLibTest
 
 ## Not yet implemented
 
-Milestone 1 covers the transport and the smallest useful tool set. Still to come:
-the rest of `BrushBuilder`'s primitives (cylinder, arch, cone, spheres), `create_entity`
-against the shipped FGDs, transforms, CSG, the selector engine for addressing existing
-geometry, `invoke_action` over TrenchBroom's ~200 named actions, and orthographic viewport
-captures.
+Still to come: `create_entity` against the shipped FGDs, transforms (translate, rotate,
+scale), CSG, the selector engine for addressing geometry that already exists, `invoke_action`
+over TrenchBroom's ~200 named actions, and orthographic viewport captures.
+
+Until transforms land, everything is axis-aligned, so sloped surfaces have to be built as
+stepped geometry.

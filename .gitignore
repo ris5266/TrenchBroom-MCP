@@ -21,3 +21,5 @@ Thumbs.db
 
 app/resources/documentation/help/index.html
 
+__pycache__/
+*.py[cod]

@@ -52,7 +52,7 @@
           "type": "object"
         },
         "material": {
-          "description": "Material to apply to all six faces. Defaults to the editor's current material.",
+          "description": "Material to apply to every face. Defaults to the editor's current material.",
           "type": "string"
         }
       },
@@ -62,6 +62,351 @@
       "type": "object"
     },
     "name": "create_brush",
+    "readOnly": false
+  },
+  {
+    "description": "Create a cylinder inscribed in the given bounds. Pass 'thickness' to make it a hollow tube instead, which produces a ring of brushes.",
+    "inputSchema": {
+      "properties": {
+        "axis": {
+          "description": "Axis the shape is revolved around. Defaults to \"z\" (upright).",
+          "enum": [
+            "x",
+            "y",
+            "z"
+          ],
+          "type": "string"
+        },
+        "bounds": {
+          "description": "An axis-aligned box in world units. Corners may be given in either order.",
+          "properties": {
+            "max": {
+              "description": "The opposite corner, as [x, y, z].",
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            },
+            "min": {
+              "description": "One corner, as [x, y, z].",
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            }
+          },
+          "required": [
+            "min",
+            "max"
+          ],
+          "type": "object"
+        },
+        "circle": {
+          "description": "How the cross-section is approximated. Defaults to 8 edge-aligned sides.",
+          "properties": {
+            "alignment": {
+              "description": "\"edge\" puts a flat face on the axes, \"vertex\" puts a corner there, \"scalable\" subdivides so the shape survives non-uniform scaling.",
+              "enum": [
+                "edge",
+                "vertex",
+                "scalable"
+              ],
+              "type": "string"
+            },
+            "precision": {
+              "description": "Subdivision level, for scalable alignment.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sides": {
+              "description": "Number of sides, for edge and vertex alignment.",
+              "minimum": 3,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "material": {
+          "description": "Material to apply to every face. Defaults to the editor's current material.",
+          "type": "string"
+        },
+        "thickness": {
+          "description": "Wall thickness. Omit for a solid cylinder.",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "bounds"
+      ],
+      "type": "object"
+    },
+    "name": "create_cylinder",
+    "readOnly": false
+  },
+  {
+    "description": "Create a cone inscribed in the given bounds, tapering along the given axis.",
+    "inputSchema": {
+      "properties": {
+        "axis": {
+          "description": "Axis the shape is revolved around. Defaults to \"z\" (upright).",
+          "enum": [
+            "x",
+            "y",
+            "z"
+          ],
+          "type": "string"
+        },
+        "bounds": {
+          "description": "An axis-aligned box in world units. Corners may be given in either order.",
+          "properties": {
+            "max": {
+              "description": "The opposite corner, as [x, y, z].",
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            },
+            "min": {
+              "description": "One corner, as [x, y, z].",
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            }
+          },
+          "required": [
+            "min",
+            "max"
+          ],
+          "type": "object"
+        },
+        "circle": {
+          "description": "How the cross-section is approximated. Defaults to 8 edge-aligned sides.",
+          "properties": {
+            "alignment": {
+              "description": "\"edge\" puts a flat face on the axes, \"vertex\" puts a corner there, \"scalable\" subdivides so the shape survives non-uniform scaling.",
+              "enum": [
+                "edge",
+                "vertex",
+                "scalable"
+              ],
+              "type": "string"
+            },
+            "precision": {
+              "description": "Subdivision level, for scalable alignment.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sides": {
+              "description": "Number of sides, for edge and vertex alignment.",
+              "minimum": 3,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "material": {
+          "description": "Material to apply to every face. Defaults to the editor's current material.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bounds"
+      ],
+      "type": "object"
+    },
+    "name": "create_cone",
+    "readOnly": false
+  },
+  {
+    "description": "Create a sphere inscribed in the given bounds. 'uv' builds it from stacked rings, 'ico' from subdivided triangles with more even faces.",
+    "inputSchema": {
+      "properties": {
+        "axis": {
+          "description": "Axis the shape is revolved around. Defaults to \"z\" (upright).",
+          "enum": [
+            "x",
+            "y",
+            "z"
+          ],
+          "type": "string"
+        },
+        "bounds": {
+          "description": "An axis-aligned box in world units. Corners may be given in either order.",
+          "properties": {
+            "max": {
+              "description": "The opposite corner, as [x, y, z].",
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            },
+            "min": {
+              "description": "One corner, as [x, y, z].",
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            }
+          },
+          "required": [
+            "min",
+            "max"
+          ],
+          "type": "object"
+        },
+        "circle": {
+          "description": "How the cross-section is approximated. Defaults to 8 edge-aligned sides.",
+          "properties": {
+            "alignment": {
+              "description": "\"edge\" puts a flat face on the axes, \"vertex\" puts a corner there, \"scalable\" subdivides so the shape survives non-uniform scaling.",
+              "enum": [
+                "edge",
+                "vertex",
+                "scalable"
+              ],
+              "type": "string"
+            },
+            "precision": {
+              "description": "Subdivision level, for scalable alignment.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sides": {
+              "description": "Number of sides, for edge and vertex alignment.",
+              "minimum": 3,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "iterations": {
+          "description": "Subdivision count, for kind \"ico\". Defaults to 1. Each step multiplies the face count by four, so keep it low.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "description": "Defaults to \"uv\".",
+          "enum": [
+            "uv",
+            "ico"
+          ],
+          "type": "string"
+        },
+        "material": {
+          "description": "Material to apply to every face. Defaults to the editor's current material.",
+          "type": "string"
+        },
+        "rings": {
+          "description": "Horizontal ring count, for kind \"uv\". Defaults to 8.",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bounds"
+      ],
+      "type": "object"
+    },
+    "name": "create_sphere",
+    "readOnly": false
+  },
+  {
+    "description": "Create a semicircular arch as a band of wedge brushes. It springs from the bottom of the bounds and rises to fill them; 'axis' is the direction the opening runs through, as for a tunnel.",
+    "inputSchema": {
+      "properties": {
+        "axis": {
+          "description": "Axis the shape is revolved around. Defaults to \"z\" (upright).",
+          "enum": [
+            "x",
+            "y",
+            "z"
+          ],
+          "type": "string"
+        },
+        "bounds": {
+          "description": "An axis-aligned box in world units. Corners may be given in either order.",
+          "properties": {
+            "max": {
+              "description": "The opposite corner, as [x, y, z].",
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            },
+            "min": {
+              "description": "One corner, as [x, y, z].",
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            }
+          },
+          "required": [
+            "min",
+            "max"
+          ],
+          "type": "object"
+        },
+        "circle": {
+          "description": "How the cross-section is approximated. Defaults to 8 edge-aligned sides.",
+          "properties": {
+            "alignment": {
+              "description": "\"edge\" puts a flat face on the axes, \"vertex\" puts a corner there, \"scalable\" subdivides so the shape survives non-uniform scaling.",
+              "enum": [
+                "edge",
+                "vertex",
+                "scalable"
+              ],
+              "type": "string"
+            },
+            "precision": {
+              "description": "Subdivision level, for scalable alignment.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sides": {
+              "description": "Number of sides, for edge and vertex alignment.",
+              "minimum": 3,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "material": {
+          "description": "Material to apply to every face. Defaults to the editor's current material.",
+          "type": "string"
+        },
+        "thickness": {
+          "description": "Wall thickness of the band.",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "bounds",
+        "thickness"
+      ],
+      "type": "object"
+    },
+    "name": "create_arch",
     "readOnly": false
   },
   {

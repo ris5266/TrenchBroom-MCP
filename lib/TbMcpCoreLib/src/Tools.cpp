@@ -5,6 +5,7 @@
 #include "mdl/Brush.h"
 #include "mdl/BrushBuilder.h"
 #include "mdl/BrushNode.h"
+#include "mdl/CircleShape.h"
 #include "mdl/Entity.h"
 #include "mdl/EntityNode.h"
 #include "mdl/GameInfo.h"
@@ -65,6 +66,225 @@ nlohmann::json boundsSchema()
     {"required", nlohmann::json::array({"min", "max"})}};
 }
 
+nlohmann::json axisSchema()
+{
+  return nlohmann::json{
+    {"type", "string"},
+    {"enum", nlohmann::json::array({"x", "y", "z"})},
+    {"description", "Axis the shape is revolved around. Defaults to \"z\" (upright)."}};
+}
+
+nlohmann::json circleSchema()
+{
+  return nlohmann::json{
+    {"type", "object"},
+    {"description",
+     "How the cross-section is approximated. Defaults to 8 edge-aligned sides."},
+    {"properties",
+     {{"alignment",
+       {{"type", "string"},
+        {"enum", nlohmann::json::array({"edge", "vertex", "scalable"})},
+        {"description",
+         "\"edge\" puts a flat face on the axes, \"vertex\" puts a corner there, "
+         "\"scalable\" subdivides so the shape survives non-uniform scaling."}}},
+      {"sides",
+       {{"type", "integer"},
+        {"minimum", 3},
+        {"description", "Number of sides, for edge and vertex alignment."}}},
+      {"precision",
+       {{"type", "integer"},
+        {"minimum", 0},
+        {"description", "Subdivision level, for scalable alignment."}}}}}};
+}
+
+nlohmann::json materialSchema()
+{
+  return nlohmann::json{
+    {"type", "string"},
+    {"description",
+     "Material to apply to every face. Defaults to the editor's current material."}};
+}
+
+// -- shared parameter reading ----------------------------------------------------------
+Result<vm::bbox3d, ToolError> readSceneBounds(
+  const mdl::Map& map, const nlohmann::json& params)
+{
+  return readBounds(params, "bounds")
+         | kdl::and_then([&](const auto& bounds) -> Result<vm::bbox3d, ToolError> {
+             const auto& worldBounds = map.worldBounds();
+             if (!worldBounds.contains(bounds))
+             {
+               return ToolError{
+                 ErrorCode::InvalidParameters,
+                 fmt::format(
+                   "bounds lie outside the world bounds ([{} {} {}] .. [{} {} {}])",
+                   worldBounds.min.x(),
+                   worldBounds.min.y(),
+                   worldBounds.min.z(),
+                   worldBounds.max.x(),
+                   worldBounds.max.y(),
+                   worldBounds.max.z())};
+             }
+             return bounds;
+           });
+}
+
+Result<vm::axis::type, ToolError> readAxis(const nlohmann::json& params)
+{
+  const auto value = readString(params, "axis", "z");
+  if (value == "x")
+  {
+    return vm::axis::x;
+  }
+  if (value == "y")
+  {
+    return vm::axis::y;
+  }
+  if (value == "z")
+  {
+    return vm::axis::z;
+  }
+  return ToolError{
+    ErrorCode::InvalidParameters, fmt::format("'axis' must be x, y or z, got '{}'", value)};
+}
+
+Result<mdl::CircleShape, ToolError> readCircleShape(const nlohmann::json& params)
+{
+  if (!params.contains("circle"))
+  {
+    return mdl::CircleShape{mdl::EdgeAlignedCircle{}};
+  }
+
+  const auto& circle = params.at("circle");
+  if (!circle.is_object())
+  {
+    return ToolError{ErrorCode::InvalidParameters, "'circle' must be an object"};
+  }
+
+  const auto alignment = readString(circle, "alignment", "edge");
+
+  if (alignment == "scalable")
+  {
+    const auto precision = circle.value("precision", 0);
+    if (precision < 0)
+    {
+      return ToolError{ErrorCode::InvalidParameters, "'circle.precision' must be >= 0"};
+    }
+    return mdl::CircleShape{mdl::ScalableCircle{size_t(precision)}};
+  }
+
+  const auto sides = circle.value("sides", 8);
+  if (sides < 3)
+  {
+    return ToolError{
+      ErrorCode::InvalidParameters, "'circle.sides' must be at least 3"};
+  }
+
+  if (alignment == "edge")
+  {
+    return mdl::CircleShape{mdl::EdgeAlignedCircle{size_t(sides)}};
+  }
+  if (alignment == "vertex")
+  {
+    return mdl::CircleShape{mdl::VertexAlignedCircle{size_t(sides)}};
+  }
+  return ToolError{
+    ErrorCode::InvalidParameters,
+    fmt::format(
+      "'circle.alignment' must be edge, vertex or scalable, got '{}'", alignment)};
+}
+
+Result<double, ToolError> readThickness(const nlohmann::json& params)
+{
+  if (!params.contains("thickness") || !params.at("thickness").is_number())
+  {
+    return ToolError{ErrorCode::InvalidParameters, "missing 'thickness' number"};
+  }
+  const auto thickness = params.at("thickness").get<double>();
+  if (thickness <= 0.0)
+  {
+    return ToolError{ErrorCode::InvalidParameters, "'thickness' must be positive"};
+  }
+  return thickness;
+}
+
+mdl::BrushBuilder makeBuilder(const mdl::Map& map)
+{
+  const auto& faceAttribsConfig = map.gameInfo().gameConfig.faceAttribsConfig;
+  return mdl::BrushBuilder{
+    map.worldNode().mapFormat(),
+    map.worldBounds(),
+    faceAttribsConfig.defaultUvAttributes,
+    faceAttribsConfig.defaultSurfaceAttributes};
+}
+
+Result<nlohmann::json, ToolError> addBrushes(
+  ToolContext& context, std::vector<mdl::Brush> brushes)
+{
+  auto& map = context.map;
+
+  if (brushes.empty())
+  {
+    return ToolError{ErrorCode::OperationFailed, "the shape produced no brushes"};
+  }
+
+  auto nodes = std::vector<mdl::Node*>{};
+  nodes.reserve(brushes.size());
+  for (auto& brush : brushes)
+  {
+    nodes.push_back(new mdl::BrushNode{std::move(brush)});
+  }
+
+  auto* parent = mdl::parentForNodes(map);
+  if (mdl::addNodes(map, {{parent, nodes}}).empty())
+  {
+    for (auto* node : nodes)
+    {
+      delete node;
+    }
+    return ToolError{ErrorCode::OperationFailed, "could not add the brushes to the map"};
+  }
+
+  auto bounds = nodes.front()->logicalBounds();
+  for (auto* node : nodes)
+  {
+    bounds = vm::merge(bounds, node->logicalBounds());
+    context.createdNodes.push_back(node);
+  }
+
+  return nlohmann::json{{"created", nodes.size()}, {"bounds", toJson(bounds)}};
+}
+
+/** Maps a BrushBuilder failure onto a tool error without losing its message. */
+Result<nlohmann::json, ToolError> toToolError(
+  Result<std::vector<mdl::Brush>> result, ToolContext& context)
+{
+  return std::move(result)
+         | kdl::and_then([&](auto brushes) { return addBrushes(context, std::move(brushes)); })
+         | kdl::or_else([](const auto& e) -> Result<nlohmann::json, ToolError> {
+             if constexpr (std::is_same_v<std::decay_t<decltype(e)>, ToolError>)
+             {
+               return e;
+             }
+             else
+             {
+               return ToolError{ErrorCode::OperationFailed, e.msg};
+             }
+           });
+}
+
+Result<nlohmann::json, ToolError> toToolError(
+  Result<mdl::Brush> result, ToolContext& context)
+{
+  return toToolError(
+    std::move(result) | kdl::transform([](auto brush) {
+      auto brushes = std::vector<mdl::Brush>{};
+      brushes.push_back(std::move(brush));
+      return brushes;
+    }),
+    context);
+}
+
 // -- ping ------------------------------------------------------------------------------
 
 Result<nlohmann::json, ToolError> ping(ToolContext& context, const nlohmann::json&)
@@ -85,63 +305,156 @@ Result<nlohmann::json, ToolError> createBrush(
 {
   auto& map = context.map;
 
-  return readBounds(params, "bounds")
-         | kdl::and_then([&](const auto& bounds) -> Result<nlohmann::json, ToolError> {
-             if (!map.worldBounds().contains(bounds))
-             {
-               const auto& worldBounds = map.worldBounds();
-               return ToolError{
-                 ErrorCode::InvalidParameters,
-                 fmt::format(
-                   "bounds lie outside the world bounds ([{} {} {}] .. [{} {} {}])",
-                   worldBounds.min.x(),
-                   worldBounds.min.y(),
-                   worldBounds.min.z(),
-                   worldBounds.max.x(),
-                   worldBounds.max.y(),
-                   worldBounds.max.z())};
-             }
-
+  return readSceneBounds(map, params)
+         | kdl::and_then([&](const auto& bounds) {
              const auto materialName =
                readString(params, "material", map.currentMaterialName());
-
-             const auto& faceAttribsConfig = map.gameInfo().gameConfig.faceAttribsConfig;
-             const auto builder = mdl::BrushBuilder{
-               map.worldNode().mapFormat(),
-               map.worldBounds(),
-               faceAttribsConfig.defaultUvAttributes,
-               faceAttribsConfig.defaultSurfaceAttributes};
-
-             return builder.createCuboid(bounds, materialName)
-                    | kdl::transform([&](auto brush) {
-                        auto* brushNode = new mdl::BrushNode{std::move(brush)};
-                        return brushNode;
-                      })
-                    | kdl::and_then(
-                      [&](auto* brushNode) -> Result<nlohmann::json, ToolError> {
-                        auto* parent = mdl::parentForNodes(map);
-                        if (mdl::addNodes(map, {{parent, {brushNode}}}).empty())
-                        {
-                          delete brushNode;
-                          return ToolError{
-                            ErrorCode::OperationFailed, "could not add brush to the map"};
-                        }
-
-                        context.createdNodes.push_back(brushNode);
-                        return nlohmann::json{
-                          {"created", 1}, {"bounds", toJson(brushNode->logicalBounds())}};
-                      })
-                    | kdl::or_else([](const auto& e) -> Result<nlohmann::json, ToolError> {
-                        if constexpr (std::is_same_v<std::decay_t<decltype(e)>, ToolError>)
-                        {
-                          return e;
-                        }
-                        else
-                        {
-                          return ToolError{ErrorCode::OperationFailed, e.msg};
-                        }
-                      });
+             return toToolError(
+               makeBuilder(map).createCuboid(bounds, materialName), context);
            });
+}
+
+// -- create_cylinder -------------------------------------------------------------------
+
+Result<nlohmann::json, ToolError> createCylinder(
+  ToolContext& context, const nlohmann::json& params)
+{
+  auto& map = context.map;
+
+  return readSceneBounds(map, params) | kdl::and_then([&](const auto& bounds) {
+           return readAxis(params) | kdl::and_then([&](const auto axis) {
+                    return readCircleShape(params)
+                           | kdl::and_then(
+                             [&](const auto& circleShape)
+                               -> Result<nlohmann::json, ToolError> {
+                               const auto materialName = readString(
+                                 params, "material", map.currentMaterialName());
+                               const auto builder = makeBuilder(map);
+
+                               if (params.contains("thickness"))
+                               {
+                                 return readThickness(params)
+                                        | kdl::and_then([&](const auto thickness) {
+                                            return toToolError(
+                                              builder.createHollowCylinder(
+                                                bounds,
+                                                thickness,
+                                                circleShape,
+                                                axis,
+                                                materialName),
+                                              context);
+                                          });
+                               }
+
+                               return toToolError(
+                                 builder.createCylinder(
+                                   bounds, circleShape, axis, materialName),
+                                 context);
+                             });
+                  });
+         });
+}
+
+// -- create_cone -----------------------------------------------------------------------
+
+Result<nlohmann::json, ToolError> createCone(
+  ToolContext& context, const nlohmann::json& params)
+{
+  auto& map = context.map;
+
+  return readSceneBounds(map, params) | kdl::and_then([&](const auto& bounds) {
+           return readAxis(params) | kdl::and_then([&](const auto axis) {
+                    return readCircleShape(params) | kdl::and_then([&](const auto& circle) {
+                             const auto materialName = readString(
+                               params, "material", map.currentMaterialName());
+                             return toToolError(
+                               makeBuilder(map).createCone(
+                                 bounds, circle, axis, materialName),
+                               context);
+                           });
+                  });
+         });
+}
+
+// -- create_sphere ---------------------------------------------------------------------
+
+Result<nlohmann::json, ToolError> createSphere(
+  ToolContext& context, const nlohmann::json& params)
+{
+  auto& map = context.map;
+
+  return readSceneBounds(map, params)
+         | kdl::and_then([&](const auto& bounds) -> Result<nlohmann::json, ToolError> {
+             const auto materialName =
+               readString(params, "material", map.currentMaterialName());
+             const auto kind = readString(params, "kind", "uv");
+             const auto builder = makeBuilder(map);
+
+             // The icosphere has uniform triangles and takes a subdivision count; the UV
+             // sphere is a stack of rings and takes a cross-section like the cylinder.
+             if (kind == "ico")
+             {
+               const auto iterations = params.value("iterations", 1);
+               if (iterations < 0)
+               {
+                 return ToolError{
+                   ErrorCode::InvalidParameters, "'iterations' must be >= 0"};
+               }
+               return toToolError(
+                 builder.createIcoSphere(bounds, size_t(iterations), materialName),
+                 context);
+             }
+
+             if (kind != "uv")
+             {
+               return ToolError{
+                 ErrorCode::InvalidParameters,
+                 fmt::format("'kind' must be uv or ico, got '{}'", kind)};
+             }
+
+             const auto rings = params.value("rings", 8);
+             if (rings < 1)
+             {
+               return ToolError{ErrorCode::InvalidParameters, "'rings' must be >= 1"};
+             }
+
+             return readAxis(params) | kdl::and_then([&](const auto axis) {
+                      return readCircleShape(params) | kdl::and_then([&](const auto& c) {
+                               return toToolError(
+                                 builder.createUvSphere(
+                                   bounds, c, size_t(rings), axis, materialName),
+                                 context);
+                             });
+                    });
+           });
+}
+
+// -- create_arch -----------------------------------------------------------------------
+
+Result<nlohmann::json, ToolError> createArch(
+  ToolContext& context, const nlohmann::json& params)
+{
+  auto& map = context.map;
+
+  return readSceneBounds(map, params) | kdl::and_then([&](const auto& bounds) {
+           return readAxis(params) | kdl::and_then([&](const auto axis) {
+                    return readThickness(params) | kdl::and_then([&](const auto thickness) {
+                             return readCircleShape(params)
+                                    | kdl::and_then([&](const auto& circle) {
+                                        const auto materialName = readString(
+                                          params, "material", map.currentMaterialName());
+                                        return toToolError(
+                                          makeBuilder(map).createArch(
+                                            bounds,
+                                            thickness,
+                                            circle,
+                                            axis,
+                                            materialName),
+                                          context);
+                                      });
+                           });
+                  });
+         });
 }
 
 // -- get_scene -------------------------------------------------------------------------
@@ -341,14 +654,88 @@ const auto toolTable = std::vector<Tool>{
     nlohmann::json{
       {"type", "object"},
       {"properties",
-       {{"bounds", boundsSchema()},
-        {"material",
-         {{"type", "string"},
-          {"description",
-           "Material to apply to all six faces. Defaults to the editor's current "
-           "material."}}}}},
+       {{"bounds", boundsSchema()}, {"material", materialSchema()}}},
       {"required", nlohmann::json::array({"bounds"})}},
     createBrush},
+  Tool{
+    "create_cylinder",
+    "Create a cylinder inscribed in the given bounds. Pass 'thickness' to make it a "
+    "hollow tube instead, which produces a ring of brushes.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"bounds", boundsSchema()},
+        {"axis", axisSchema()},
+        {"circle", circleSchema()},
+        {"thickness",
+         {{"type", "number"},
+          {"exclusiveMinimum", 0},
+          {"description",
+           "Wall thickness. Omit for a solid cylinder."}}},
+        {"material", materialSchema()}}},
+      {"required", nlohmann::json::array({"bounds"})}},
+    createCylinder},
+  Tool{
+    "create_cone",
+    "Create a cone inscribed in the given bounds, tapering along the given axis.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"bounds", boundsSchema()},
+        {"axis", axisSchema()},
+        {"circle", circleSchema()},
+        {"material", materialSchema()}}},
+      {"required", nlohmann::json::array({"bounds"})}},
+    createCone},
+  Tool{
+    "create_sphere",
+    "Create a sphere inscribed in the given bounds. 'uv' builds it from stacked rings, "
+    "'ico' from subdivided triangles with more even faces.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"bounds", boundsSchema()},
+        {"kind",
+         {{"type", "string"},
+          {"enum", nlohmann::json::array({"uv", "ico"})},
+          {"description", "Defaults to \"uv\"."}}},
+        {"rings",
+         {{"type", "integer"},
+          {"minimum", 1},
+          {"description", "Horizontal ring count, for kind \"uv\". Defaults to 8."}}},
+        {"iterations",
+         {{"type", "integer"},
+          {"minimum", 0},
+          {"description",
+           "Subdivision count, for kind \"ico\". Defaults to 1. Each step multiplies the "
+           "face count by four, so keep it low."}}},
+        {"axis", axisSchema()},
+        {"circle", circleSchema()},
+        {"material", materialSchema()}}},
+      {"required", nlohmann::json::array({"bounds"})}},
+    createSphere},
+  Tool{
+    "create_arch",
+    "Create a semicircular arch as a band of wedge brushes. It springs from the bottom "
+    "of the bounds and rises to fill them; 'axis' is the direction the opening runs "
+    "through, as for a tunnel.",
+    ToolKind::Mutating,
+    nlohmann::json{
+      {"type", "object"},
+      {"properties",
+       {{"bounds", boundsSchema()},
+        {"thickness",
+         {{"type", "number"},
+          {"exclusiveMinimum", 0},
+          {"description", "Wall thickness of the band."}}},
+        {"axis", axisSchema()},
+        {"circle", circleSchema()},
+        {"material", materialSchema()}}},
+      {"required", nlohmann::json::array({"bounds", "thickness"})}},
+    createArch},
   Tool{
     "set_worldspawn_property",
     "Set a key on the worldspawn entity, such as 'wad' to attach a texture WAD, or "

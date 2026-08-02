@@ -1,5 +1,6 @@
 #include "mcp/Dispatch.h"
 
+#include "mdl/Brush.h"
 #include "mdl/BrushNode.h"
 #include "mdl/CatchConfig.h"
 #include "mdl/Entity.h"
@@ -14,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 namespace tb::mcp
 {
@@ -164,6 +166,220 @@ TEST_CASE("get_scene")
     CHECK(map.selection().nodes == selectionBefore);
     CHECK(map.modificationCount() == modificationCountBefore);
   }
+}
+
+TEST_CASE("create_cylinder")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  const auto request = [](nlohmann::json params) {
+    params["bounds"] = {{"min", {0, 0, 0}}, {"max", {128, 128, 256}}};
+    return nlohmann::json{{"tool", "create_cylinder"}, {"params", params}};
+  };
+
+  SECTION("creates one brush by default")
+  {
+    const auto response = dispatch(map, request({}));
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["created"] == 1);
+    CHECK(brushCount(map) == 1u);
+  }
+
+  SECTION("honours the requested side count")
+  {
+    REQUIRE(dispatch(map, request({{"circle", {{"sides", 16}}}}))["ok"] == true);
+
+    const auto* brushNode =
+      dynamic_cast<mdl::BrushNode*>(map.worldNode().defaultLayer()->children().front());
+    REQUIRE(brushNode != nullptr);
+    // Sides plus the two caps.
+    CHECK(brushNode->brush().faceCount() == 18u);
+  }
+
+  SECTION("a thickness produces a ring of brushes")
+  {
+    const auto response = dispatch(map, request({{"thickness", 16}}));
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["created"] > 1);
+    CHECK(brushCount(map) > 1u);
+  }
+
+  SECTION("the whole tube is one undo step")
+  {
+    REQUIRE(dispatch(map, request({{"thickness", 16}}))["ok"] == true);
+    REQUIRE(brushCount(map) > 1u);
+
+    map.undoCommand();
+
+    CHECK(brushCount(map) == 0u);
+  }
+
+  SECTION("rejects a bad axis")
+  {
+    const auto response = dispatch(map, request({{"axis", "w"}}));
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+    CHECK(brushCount(map) == 0u);
+  }
+
+  SECTION("rejects fewer than three sides")
+  {
+    const auto response = dispatch(map, request({{"circle", {{"sides", 2}}}}));
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+
+  SECTION("rejects a non-positive thickness")
+  {
+    const auto response = dispatch(map, request({{"thickness", 0}}));
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+}
+
+TEST_CASE("create_cone")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  const auto request = [](nlohmann::json params) {
+    params["bounds"] = {{"min", {0, 0, 0}}, {"max", {128, 128, 256}}};
+    return nlohmann::json{{"tool", "create_cone"}, {"params", params}};
+  };
+
+  SECTION("creates a cone")
+  {
+    REQUIRE(dispatch(map, request({}))["ok"] == true);
+    CHECK(brushCount(map) == 1u);
+  }
+
+  SECTION("builds along the requested axis")
+  {
+    REQUIRE(dispatch(map, request({{"axis", "x"}}))["ok"] == true);
+    CHECK(brushCount(map) == 1u);
+  }
+
+  SECTION("accepts vertex alignment")
+  {
+    REQUIRE(
+      dispatch(map, request({{"circle", {{"alignment", "vertex"}, {"sides", 12}}}}))["ok"]
+      == true);
+    CHECK(brushCount(map) == 1u);
+  }
+}
+
+TEST_CASE("create_sphere")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  const auto request = [](nlohmann::json params) {
+    params["bounds"] = {{"min", {0, 0, 0}}, {"max", {128, 128, 128}}};
+    return nlohmann::json{{"tool", "create_sphere"}, {"params", params}};
+  };
+
+  SECTION("builds a uv sphere by default")
+  {
+    REQUIRE(dispatch(map, request({}))["ok"] == true);
+    CHECK(brushCount(map) == 1u);
+  }
+
+  SECTION("builds an icosphere")
+  {
+    REQUIRE(dispatch(map, request({{"kind", "ico"}, {"iterations", 1}}))["ok"] == true);
+    CHECK(brushCount(map) == 1u);
+  }
+
+  SECTION("rejects an unknown kind")
+  {
+    const auto response = dispatch(map, request({{"kind", "geodesic"}}));
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+    CHECK(brushCount(map) == 0u);
+  }
+
+  SECTION("rejects a ring count below one")
+  {
+    const auto response = dispatch(map, request({{"rings", 0}}));
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+}
+
+TEST_CASE("create_arch")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  const auto request = [](nlohmann::json params) {
+    params["bounds"] = {{"min", {0, 0, 0}}, {"max", {256, 128, 256}}};
+    return nlohmann::json{{"tool", "create_arch"}, {"params", params}};
+  };
+
+  SECTION("produces a band of several brushes")
+  {
+    const auto response = dispatch(map, request({{"thickness", 24}, {"axis", "y"}}));
+
+    REQUIRE(response["ok"] == true);
+    CHECK(response["result"]["created"] > 1);
+    CHECK(brushCount(map) > 1u);
+  }
+
+  SECTION("the whole arch is one undo step")
+  {
+    REQUIRE(dispatch(map, request({{"thickness", 24}, {"axis", "y"}}))["ok"] == true);
+    const auto count = brushCount(map);
+    REQUIRE(count > 1u);
+
+    map.undoCommand();
+
+    CHECK(brushCount(map) == 0u);
+  }
+
+  SECTION("leaves every voussoir selected")
+  {
+    REQUIRE(dispatch(map, request({{"thickness", 24}, {"axis", "y"}}))["ok"] == true);
+
+    CHECK(map.selection().brushes.size() == brushCount(map));
+  }
+
+  SECTION("requires a thickness")
+  {
+    const auto response = dispatch(map, request({{"axis", "y"}}));
+
+    CHECK(response["ok"] == false);
+    CHECK(response["error"]["code"] == "invalid_parameters");
+  }
+}
+
+TEST_CASE("shapes reject bounds outside the world")
+{
+  auto fixture = mdl::MapFixture{};
+  auto& map = fixture.create(mdl::QuakeFixtureConfig);
+
+  const auto huge = map.worldBounds().max.x() * 2.0;
+  const auto tool =
+    GENERATE(std::string{"create_cylinder"}, "create_cone", "create_sphere");
+  CAPTURE(tool);
+
+  const auto response = dispatch(
+    map,
+    nlohmann::json{
+      {"tool", tool},
+      {"params",
+       {{"bounds", {{"min", {0, 0, 0}}, {"max", {huge, huge, huge}}}}, {"thickness", 8}}}});
+
+  CHECK(response["ok"] == false);
+  CHECK(response["error"]["code"] == "invalid_parameters");
+  CHECK(brushCount(map) == 0u);
 }
 
 TEST_CASE("set_worldspawn_property")
